@@ -1,0 +1,33 @@
+name: net_design
+description: "Vendor-Neutral Network Topology & VLAN/STP Design Sandbox desktop application."
+publish_to: 'none'
+
+version: 0.1.0+1
+
+environment:
+  sdk: ^3.13.0
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+  network_suite_shared:
+    git:
+      url: https://github.com/Tom-McGuire/network-suite-shared.git
+      ref: main
+
+  cupertino_icons: ^1.0.8
+  provider: ^6.1.5+1
+  path_provider: ^2.1.6
+  path: ^1.9.1
+  file_picker: ^13.1.0
+  intl: ^0.20.2
+  uuid: ^4.5.1
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0
+
+flutter:
+  uses-material-design: true
