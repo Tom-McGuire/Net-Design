@@ -61,6 +61,7 @@ class _NetDesignAppState extends State<NetDesignApp>
           _themeMode = mode;
           AppTheme.isDark = (mode == 'dark');
         });
+        _viewModel.notifyThemeChanged();
       }
     });
   }
@@ -97,10 +98,7 @@ class _NetDesignAppState extends State<NetDesignApp>
         themeMode: AppTheme.isDark ? ThemeMode.dark : ThemeMode.light,
         theme: AppTheme.lightTheme(),
         darkTheme: AppTheme.darkTheme(),
-        home: KeyedSubtree(
-          key: ValueKey(_themeMode),
-          child: SandboxScreen(showStartupAdvisory: widget.showStartupAdvisory),
-        ),
+        home: SandboxScreen(showStartupAdvisory: widget.showStartupAdvisory),
       ),
     );
   }

@@ -17,14 +17,32 @@ class DesignCanvas extends StatefulWidget {
 }
 
 class _DesignCanvasState extends State<DesignCanvas> {
-  static const double _canvasWidth = 2400.0;
-  static const double _canvasHeight = 1700.0;
+  static const double _canvasWidth = 3600.0;
+  static const double _canvasHeight = 2600.0;
 
   final TransformationController _transformController =
       TransformationController();
+  double _canvasScale = 1.0;
+
+  @override
+  void initState() {
+    super.initState();
+    _transformController.addListener(_onTransformChanged);
+  }
+
+  void _onTransformChanged() {
+    final raw = _transformController.value.getMaxScaleOnAxis();
+    final next = raw > 0 ? raw : 1.0;
+    if ((next - _canvasScale).abs() > 0.001) {
+      setState(() {
+        _canvasScale = next;
+      });
+    }
+  }
 
   @override
   void dispose() {
+    _transformController.removeListener(_onTransformChanged);
     _transformController.dispose();
     super.dispose();
   }
@@ -87,14 +105,18 @@ class _DesignCanvasState extends State<DesignCanvas> {
           });
         }
 
+        final backdropColor = AppTheme.isDark
+            ? const Color(0xFF0B0C0E)
+            : const Color(0xFFDDE1E7);
+
         return Container(
-          color: AppTheme.scaffoldBg,
+          color: backdropColor,
           child: Stack(
             children: [
               InteractiveViewer(
                 transformationController: _transformController,
                 constrained: false,
-                boundaryMargin: const EdgeInsets.all(400),
+                boundaryMargin: const EdgeInsets.all(600),
                 minScale: 0.45,
                 maxScale: 2.0,
                 child: GestureDetector(
@@ -108,9 +130,18 @@ class _DesignCanvasState extends State<DesignCanvas> {
                       vm.clearSelection();
                     }
                   },
-                  child: SizedBox(
+                  child: Container(
                     width: _canvasWidth,
                     height: _canvasHeight,
+                    decoration: BoxDecoration(
+                      color: AppTheme.scaffoldBg,
+                      border: Border.all(
+                        color: AppTheme.accent.withValues(
+                          alpha: AppTheme.isDark ? 0.5 : 0.4,
+                        ),
+                        width: 1.5,
+                      ),
+                    ),
                     child: Stack(
                       clipBehavior: Clip.none,
                       children: [
@@ -133,13 +164,19 @@ class _DesignCanvasState extends State<DesignCanvas> {
                           Positioned(
                             left: sw.dx,
                             top: sw.dy,
-                            child: SwitchNodeWidget(switchNode: sw),
+                            child: SwitchNodeWidget(
+                              switchNode: sw,
+                              canvasScale: _canvasScale,
+                            ),
                           ),
                         for (final ep in vm.project.endpoints)
                           Positioned(
                             left: ep.dx,
                             top: ep.dy,
-                            child: EndpointNodeWidget(endpointNode: ep),
+                            child: EndpointNodeWidget(
+                              endpointNode: ep,
+                              canvasScale: _canvasScale,
+                            ),
                           ),
                       ],
                     ),
@@ -187,7 +224,7 @@ class _DesignCanvasState extends State<DesignCanvas> {
                   ),
                 ),
 
-              // Bottom-left project title / legend chip
+              // Top-left project title / legend chip
               Positioned(
                 left: 12,
                 top: 12,
@@ -228,6 +265,7 @@ class _DesignCanvasState extends State<DesignCanvas> {
                 right: 12,
                 bottom: 12,
                 child: Container(
+                  padding: const EdgeInsets.only(right: 8),
                   decoration: BoxDecoration(
                     color: AppTheme.surface.withValues(alpha: 0.95),
                     borderRadius: BorderRadius.circular(6),
@@ -264,6 +302,21 @@ class _DesignCanvasState extends State<DesignCanvas> {
                           Icons.zoom_in,
                           size: 16,
                           color: AppTheme.textPrimary,
+                        ),
+                      ),
+                      Container(
+                        width: 1,
+                        height: 16,
+                        color: AppTheme.border,
+                      ),
+                      const SizedBox(width: 8),
+                      Text(
+                        '${(_canvasScale * 100).round()}%',
+                        style: TextStyle(
+                          fontFamily: 'monospace',
+                          fontSize: 11,
+                          fontWeight: FontWeight.w600,
+                          color: AppTheme.textSecondary,
                         ),
                       ),
                     ],

@@ -1,3 +1,4 @@
+import 'package:flutter/gestures.dart';
 import 'package:material_ui/material_ui.dart';
 import 'package:provider/provider.dart';
 
@@ -11,16 +12,27 @@ const double kSwitchCardWidth = 268.0;
 const double kSwitchCardMinHeight = 148.0;
 
 /// Interactive Switch card rendered on the topology design canvas.
-class SwitchNodeWidget extends StatelessWidget {
+class SwitchNodeWidget extends StatefulWidget {
   const SwitchNodeWidget({
     super.key,
     required this.switchNode,
+    this.canvasScale = 1.0,
   });
 
   final SwitchNodeInstance switchNode;
+  final double canvasScale;
+
+  @override
+  State<SwitchNodeWidget> createState() => _SwitchNodeWidgetState();
+}
+
+class _SwitchNodeWidgetState extends State<SwitchNodeWidget> {
+  Offset? _dragStartNodePos;
+  Offset? _dragStartGlobalPos;
 
   @override
   Widget build(BuildContext context) {
+    final switchNode = widget.switchNode;
     final vm = context.watch<SandboxViewModel>();
     final isSelected = vm.selectedSwitchId == switchNode.id;
     final highlightedVlan = vm.highlightedVlanId;
@@ -52,13 +64,37 @@ class SwitchNodeWidget extends StatelessWidget {
       duration: const Duration(milliseconds: 160),
       opacity: carriesHighlightedVlan ? 1.0 : 0.35,
       child: GestureDetector(
+        dragStartBehavior: DragStartBehavior.down,
+        supportedDevices: const {
+          PointerDeviceKind.mouse,
+          PointerDeviceKind.touch,
+          PointerDeviceKind.stylus,
+          PointerDeviceKind.invertedStylus,
+        },
         onTap: () => vm.selectSwitch(switchNode.id),
+        onPanStart: (details) {
+          _dragStartNodePos = Offset(switchNode.dx, switchNode.dy);
+          _dragStartGlobalPos = details.globalPosition;
+        },
         onPanUpdate: (details) {
+          final startNode = _dragStartNodePos;
+          final startGlobal = _dragStartGlobalPos;
+          if (startNode == null || startGlobal == null) return;
+          final scale = widget.canvasScale <= 0 ? 1.0 : widget.canvasScale;
+          final delta = (details.globalPosition - startGlobal) / scale;
           vm.moveNode(
             switchNode.id,
-            switchNode.dx + details.delta.dx,
-            switchNode.dy + details.delta.dy,
+            startNode.dx + delta.dx,
+            startNode.dy + delta.dy,
           );
+        },
+        onPanEnd: (_) {
+          _dragStartNodePos = null;
+          _dragStartGlobalPos = null;
+        },
+        onPanCancel: () {
+          _dragStartNodePos = null;
+          _dragStartGlobalPos = null;
         },
         child: Container(
           width: kSwitchCardWidth,
@@ -103,17 +139,14 @@ class SwitchNodeWidget extends StatelessWidget {
                     ),
                     const SizedBox(width: 6),
                     Expanded(
-                      child: InkWell(
-                        onDoubleTap: () => _renameSwitch(context, vm),
-                        child: Text(
-                          switchNode.userLabel,
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: TextStyle(
-                            fontSize: 12.5,
-                            fontWeight: FontWeight.w700,
-                            color: AppTheme.textPrimary,
-                          ),
+                      child: Text(
+                        switchNode.userLabel,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          fontSize: 12.5,
+                          fontWeight: FontWeight.w700,
+                          color: AppTheme.textPrimary,
                         ),
                       ),
                     ),
@@ -325,12 +358,12 @@ class SwitchNodeWidget extends StatelessWidget {
   Future<void> _renameSwitch(BuildContext context, SandboxViewModel vm) async {
     final newName = await RenameDeviceDialog.show(
       context,
-      initialName: switchNode.userLabel,
-      macAddress: switchNode.macAddress,
-      subtitle: 'Switch (${switchNode.portSummaryPills.join(" • ")})',
+      initialName: widget.switchNode.userLabel,
+      macAddress: widget.switchNode.macAddress,
+      subtitle: 'Switch (${widget.switchNode.portSummaryPills.join(" • ")})',
     );
     if (newName != null) {
-      vm.updateSwitch(switchNode.copyWith(userLabel: newName));
+      vm.updateSwitch(widget.switchNode.copyWith(userLabel: newName));
     }
   }
 }

@@ -54,19 +54,29 @@ class TopControlBar extends StatelessWidget {
                   Row(
                     mainAxisSize: MainAxisSize.min,
                     children: [
-                      Container(
-                        padding: const EdgeInsets.all(6),
-                        decoration: BoxDecoration(
-                          color: AppTheme.accent.withValues(alpha: 0.14),
-                          borderRadius: BorderRadius.circular(6),
-                          border: Border.all(
-                            color: AppTheme.accent.withValues(alpha: 0.4),
+                      ClipRRect(
+                        borderRadius: BorderRadius.circular(6),
+                        child: Image.asset(
+                          'assets/app_icon.png',
+                          width: 32,
+                          height: 32,
+                          fit: BoxFit.cover,
+                          errorBuilder: (_, _, _) => Container(
+                            width: 32,
+                            height: 32,
+                            decoration: BoxDecoration(
+                              color: AppTheme.accent.withValues(alpha: 0.14),
+                              borderRadius: BorderRadius.circular(6),
+                              border: Border.all(
+                                color: AppTheme.accent.withValues(alpha: 0.4),
+                              ),
+                            ),
+                            child: Icon(
+                              Icons.hub_outlined,
+                              size: 18,
+                              color: AppTheme.accent,
+                            ),
                           ),
-                        ),
-                        child: Icon(
-                          Icons.hub_outlined,
-                          size: 18,
-                          color: AppTheme.accent,
                         ),
                       ),
                       const SizedBox(width: 8),

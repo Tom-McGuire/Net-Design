@@ -442,8 +442,8 @@ class SandboxViewModel extends ChangeNotifier {
   }
 
   void moveNode(String nodeId, double dx, double dy) {
-    final clampedX = dx.clamp(16.0, 2200.0);
-    final clampedY = dy.clamp(16.0, 1600.0);
+    final clampedX = dx.clamp(16.0, 3300.0);
+    final clampedY = dy.clamp(16.0, 2350.0);
 
     for (var i = 0; i < _project.switches.length; i++) {
       if (_project.switches[i].id == nodeId) {
@@ -770,6 +770,11 @@ class SandboxViewModel extends ChangeNotifier {
         ? 'light'
         : 'dark';
     await themeService?.setThemeMode(nextMode);
+    notifyListeners();
+  }
+
+  void notifyThemeChanged() {
+    notifyListeners();
   }
 
   /// Generates vendor-neutral CLI reference summary for the selected switch.

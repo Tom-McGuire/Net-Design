@@ -1,3 +1,4 @@
+import 'package:flutter/gestures.dart';
 import 'package:material_ui/material_ui.dart';
 import 'package:provider/provider.dart';
 
@@ -10,16 +11,27 @@ const double kEndpointCardWidth = 228.0;
 const double kEndpointCardMinHeight = 104.0;
 
 /// Interactive Endpoint card rendered on the topology design canvas.
-class EndpointNodeWidget extends StatelessWidget {
+class EndpointNodeWidget extends StatefulWidget {
   const EndpointNodeWidget({
     super.key,
     required this.endpointNode,
+    this.canvasScale = 1.0,
   });
 
   final EndpointNodeInstance endpointNode;
+  final double canvasScale;
+
+  @override
+  State<EndpointNodeWidget> createState() => _EndpointNodeWidgetState();
+}
+
+class _EndpointNodeWidgetState extends State<EndpointNodeWidget> {
+  Offset? _dragStartNodePos;
+  Offset? _dragStartGlobalPos;
 
   @override
   Widget build(BuildContext context) {
+    final endpointNode = widget.endpointNode;
     final vm = context.watch<SandboxViewModel>();
     final isSelected = vm.selectedEndpointId == endpointNode.id;
     final highlightedVlan = vm.highlightedVlanId;
@@ -42,6 +54,13 @@ class EndpointNodeWidget extends StatelessWidget {
       duration: const Duration(milliseconds: 160),
       opacity: matchesHighlightedVlan ? 1.0 : 0.35,
       child: GestureDetector(
+        dragStartBehavior: DragStartBehavior.down,
+        supportedDevices: const {
+          PointerDeviceKind.mouse,
+          PointerDeviceKind.touch,
+          PointerDeviceKind.stylus,
+          PointerDeviceKind.invertedStylus,
+        },
         onTap: () {
           if (vm.pendingWireSource != null && !isConnected) {
             vm.completeWiringToPort(endpointNode.id, 1);
@@ -49,12 +68,29 @@ class EndpointNodeWidget extends StatelessWidget {
             vm.selectEndpoint(endpointNode.id);
           }
         },
+        onPanStart: (details) {
+          _dragStartNodePos = Offset(endpointNode.dx, endpointNode.dy);
+          _dragStartGlobalPos = details.globalPosition;
+        },
         onPanUpdate: (details) {
+          final startNode = _dragStartNodePos;
+          final startGlobal = _dragStartGlobalPos;
+          if (startNode == null || startGlobal == null) return;
+          final scale = widget.canvasScale <= 0 ? 1.0 : widget.canvasScale;
+          final delta = (details.globalPosition - startGlobal) / scale;
           vm.moveNode(
             endpointNode.id,
-            endpointNode.dx + details.delta.dx,
-            endpointNode.dy + details.delta.dy,
+            startNode.dx + delta.dx,
+            startNode.dy + delta.dy,
           );
+        },
+        onPanEnd: (_) {
+          _dragStartNodePos = null;
+          _dragStartGlobalPos = null;
+        },
+        onPanCancel: () {
+          _dragStartNodePos = null;
+          _dragStartGlobalPos = null;
         },
         child: Container(
           width: kEndpointCardWidth,
@@ -96,20 +132,29 @@ class EndpointNodeWidget extends StatelessWidget {
                     ),
                     const SizedBox(width: 6),
                     Expanded(
-                      child: InkWell(
-                        onDoubleTap: () => _renameEndpoint(context, vm),
-                        child: Text(
-                          endpointNode.userLabel,
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: TextStyle(
-                            fontSize: 12,
-                            fontWeight: FontWeight.w700,
-                            color: AppTheme.textPrimary,
-                          ),
+                      child: Text(
+                        endpointNode.userLabel,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          fontSize: 12,
+                          fontWeight: FontWeight.w700,
+                          color: AppTheme.textPrimary,
                         ),
                       ),
                     ),
+                    InkWell(
+                      onTap: () => _renameEndpoint(context, vm),
+                      child: Padding(
+                        padding: const EdgeInsets.all(2),
+                        child: Icon(
+                          Icons.edit,
+                          size: 13,
+                          color: AppTheme.textMuted,
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 4),
                     InkWell(
                       onTap: () {
                         if (vm.pendingWireSource != null) {
@@ -248,12 +293,12 @@ class EndpointNodeWidget extends StatelessWidget {
   ) async {
     final newName = await RenameDeviceDialog.show(
       context,
-      initialName: endpointNode.userLabel,
-      macAddress: endpointNode.macAddress,
-      subtitle: endpointNode.category.label,
+      initialName: widget.endpointNode.userLabel,
+      macAddress: widget.endpointNode.macAddress,
+      subtitle: widget.endpointNode.category.label,
     );
     if (newName != null) {
-      vm.updateEndpoint(endpointNode.copyWith(userLabel: newName));
+      vm.updateEndpoint(widget.endpointNode.copyWith(userLabel: newName));
     }
   }
 }
