@@ -1,0 +1,822 @@
+import 'dart:math';
+
+import 'package:flutter/material.dart';
+import 'package:uuid/uuid.dart';
+
+import '../../data/services/device_templates.dart';
+import '../../data/services/library_storage_service.dart';
+import '../../data/services/project_storage_service.dart';
+import '../../data/services/suite_theme_service.dart';
+import '../../domain/engine/topology_validator.dart';
+import '../../domain/models/endpoint_node_instance.dart';
+import '../../domain/models/endpoint_template.dart';
+import '../../domain/models/enums.dart';
+import '../../domain/models/network_link_edge.dart';
+import '../../domain/models/switch_node_instance.dart';
+import '../../domain/models/switch_port_config.dart';
+import '../../domain/models/switch_template.dart';
+import '../../domain/models/topology_project.dart';
+import '../../domain/models/validation_issue.dart';
+
+/// Main state container & MVVM view model for the Network Topology Sandbox.
+class SandboxViewModel extends ChangeNotifier {
+  SandboxViewModel({
+    LibraryStorageService? libraryStorage,
+    ProjectStorageService? projectStorage,
+    this.themeService,
+    TopologyValidator? validator,
+    TopologyProject? initialProject,
+  })  : _libraryStorage = libraryStorage ?? LibraryStorageService(),
+        _projectStorage = projectStorage ?? const ProjectStorageService(),
+        _validator = validator ?? const TopologyValidator(),
+        _project = initialProject ?? DeviceTemplates.healthyReferenceRingDemo(),
+        _switchTemplates = DeviceTemplates.defaultSwitchTemplates(),
+        _endpointTemplates = DeviceTemplates.defaultEndpointTemplates() {
+    _revalidate();
+  }
+
+  final LibraryStorageService _libraryStorage;
+  final ProjectStorageService _projectStorage;
+  final SuiteThemeService? themeService;
+  final TopologyValidator _validator;
+  final Uuid _uuid = const Uuid();
+  final Random _rng = Random();
+
+  TopologyProject _project;
+  TopologyProject get project => _project;
+
+  List<SwitchTemplate> _switchTemplates;
+  List<SwitchTemplate> get switchTemplates =>
+      List.unmodifiable(_switchTemplates);
+
+  List<EndpointTemplate> _endpointTemplates;
+  List<EndpointTemplate> get endpointTemplates =>
+      List.unmodifiable(_endpointTemplates);
+
+  late ValidationResult _validation;
+  ValidationResult get validation => _validation;
+
+  String? _selectedSwitchId;
+  String? get selectedSwitchId => _selectedSwitchId;
+
+  String? _selectedEndpointId;
+  String? get selectedEndpointId => _selectedEndpointId;
+
+  String? _selectedLinkId;
+  String? get selectedLinkId => _selectedLinkId;
+
+  int? _selectedPortNumber;
+  int? get selectedPortNumber => _selectedPortNumber;
+
+  int? _highlightedVlanId;
+  int? get highlightedVlanId => _highlightedVlanId;
+
+  ({String nodeId, int portNumber})? _pendingWireSource;
+  ({String nodeId, int portNumber})? get pendingWireSource =>
+      _pendingWireSource;
+
+  String _issueSearchQuery = '';
+  String get issueSearchQuery => _issueSearchQuery;
+
+  IssueCategory? _issueCategoryFilter;
+  IssueCategory? get issueCategoryFilter => _issueCategoryFilter;
+
+  bool _isIssuesExpanded = true;
+  bool get isIssuesExpanded => _isIssuesExpanded;
+
+  int _inspectorTabIndex = 0;
+  int get inspectorTabIndex => _inspectorTabIndex;
+
+  String? _lastStatusMessage;
+  String? get lastStatusMessage => _lastStatusMessage;
+
+  /// Emitted when clicking an issue so the canvas centers on that object.
+  Offset? _canvasCenterRequest;
+  Offset? get canvasCenterRequest => _canvasCenterRequest;
+
+  SwitchNodeInstance? get selectedSwitch {
+    if (_selectedSwitchId == null) return null;
+    for (final sw in _project.switches) {
+      if (sw.id == _selectedSwitchId) return sw;
+    }
+    return null;
+  }
+
+  EndpointNodeInstance? get selectedEndpoint {
+    if (_selectedEndpointId == null) return null;
+    for (final ep in _project.endpoints) {
+      if (ep.id == _selectedEndpointId) return ep;
+    }
+    return null;
+  }
+
+  NetworkLinkEdge? get selectedLink {
+    if (_selectedLinkId == null) return null;
+    for (final l in _project.links) {
+      if (l.id == _selectedLinkId) return l;
+    }
+    return null;
+  }
+
+  List<int> get availableVlanIds {
+    final ids = <int>{..._project.knownVlans.keys};
+    for (final sw in _project.switches) {
+      ids.addAll(sw.vlanConfigs.keys);
+      for (final p in sw.ports) {
+        ids.add(p.nativeVlan);
+        ids.addAll(p.allowedVlans);
+      }
+    }
+    for (final ep in _project.endpoints) {
+      for (final flow in ep.activeTrafficFlows) {
+        ids.add(flow.defaultVlanId);
+      }
+    }
+    final list = ids.toList()..sort();
+    return list;
+  }
+
+  List<ValidationIssue> get filteredIssues {
+    return _validation.issues.where((issue) {
+      if (_issueCategoryFilter != null &&
+          issue.category != _issueCategoryFilter) {
+        return false;
+      }
+      if (_issueSearchQuery.trim().isNotEmpty) {
+        final q = _issueSearchQuery.toLowerCase();
+        return issue.title.toLowerCase().contains(q) ||
+            issue.message.toLowerCase().contains(q) ||
+            issue.category.label.toLowerCase().contains(q);
+      }
+      return true;
+    }).toList();
+  }
+
+  Future<void> init() async {
+    final bundle = await _libraryStorage.loadLibrary();
+    _switchTemplates = bundle.switchTemplates;
+    _endpointTemplates = bundle.endpointTemplates;
+    notifyListeners();
+  }
+
+  void _revalidate() {
+    _validation = _validator.validate(_project);
+  }
+
+  void clearStatusMessage() {
+    _lastStatusMessage = null;
+    notifyListeners();
+  }
+
+  void consumeCanvasCenterRequest() {
+    _canvasCenterRequest = null;
+  }
+
+  void setIssuesExpanded(bool expanded) {
+    _isIssuesExpanded = expanded;
+    notifyListeners();
+  }
+
+  void setInspectorTabIndex(int idx) {
+    _inspectorTabIndex = idx;
+    notifyListeners();
+  }
+
+  void setIssueSearchQuery(String query) {
+    _issueSearchQuery = query;
+    notifyListeners();
+  }
+
+  void setIssueCategoryFilter(IssueCategory? category) {
+    _issueCategoryFilter = category;
+    notifyListeners();
+  }
+
+  void setHighlightedVlan(int? vlanId) {
+    _highlightedVlanId = vlanId;
+    notifyListeners();
+  }
+
+  void selectSwitch(String? switchId, {int? portNumber}) {
+    _selectedSwitchId = switchId;
+    _selectedEndpointId = null;
+    _selectedLinkId = null;
+    _selectedPortNumber = portNumber;
+    notifyListeners();
+  }
+
+  void selectEndpoint(String? endpointId) {
+    _selectedEndpointId = endpointId;
+    _selectedSwitchId = null;
+    _selectedLinkId = null;
+    _selectedPortNumber = null;
+    notifyListeners();
+  }
+
+  void selectLink(String? linkId) {
+    _selectedLinkId = linkId;
+    _selectedSwitchId = null;
+    _selectedEndpointId = null;
+    _selectedPortNumber = null;
+    notifyListeners();
+  }
+
+  void clearSelection() {
+    _selectedSwitchId = null;
+    _selectedEndpointId = null;
+    _selectedLinkId = null;
+    _selectedPortNumber = null;
+    _pendingWireSource = null;
+    notifyListeners();
+  }
+
+  /// Focuses and opens inspector for any clicked [ValidationIssue].
+  void focusOnIssue(ValidationIssue issue) {
+    if (issue.linkId != null) {
+      for (final link in _project.links) {
+        if (link.id == issue.linkId) {
+          selectLink(link.id);
+          final posA = _nodePosition(link.sourceNodeId);
+          final posB = _nodePosition(link.targetNodeId);
+          if (posA != null && posB != null) {
+            _canvasCenterRequest = Offset(
+              (posA.dx + posB.dx) / 2 + 120,
+              (posA.dy + posB.dy) / 2 + 80,
+            );
+          }
+          notifyListeners();
+          return;
+        }
+      }
+    }
+
+    if (issue.nodeId != null) {
+      for (final sw in _project.switches) {
+        if (sw.id == issue.nodeId) {
+          selectSwitch(sw.id, portNumber: issue.portNumber);
+          _canvasCenterRequest = Offset(sw.dx + 140, sw.dy + 90);
+          notifyListeners();
+          return;
+        }
+      }
+      for (final ep in _project.endpoints) {
+        if (ep.id == issue.nodeId) {
+          selectEndpoint(ep.id);
+          _canvasCenterRequest = Offset(ep.dx + 110, ep.dy + 60);
+          notifyListeners();
+          return;
+        }
+      }
+    }
+  }
+
+  Offset? _nodePosition(String nodeId) {
+    for (final sw in _project.switches) {
+      if (sw.id == nodeId) return Offset(sw.dx, sw.dy);
+    }
+    for (final ep in _project.endpoints) {
+      if (ep.id == nodeId) return Offset(ep.dx, ep.dy);
+    }
+    return null;
+  }
+
+  // --- Interactive Wiring ---
+
+  void startWiringFromPort(String nodeId, int portNumber) {
+    // Reject if port already connected
+    if (isPortConnected(nodeId, portNumber)) {
+      _lastStatusMessage =
+          'Port $portNumber is already connected. Remove its link first or pick a free port.';
+      notifyListeners();
+      return;
+    }
+    _pendingWireSource = (nodeId: nodeId, portNumber: portNumber);
+    _lastStatusMessage =
+        'Select a destination port on another switch or endpoint to complete cable link.';
+    notifyListeners();
+  }
+
+  void cancelWiring() {
+    _pendingWireSource = null;
+    _lastStatusMessage = null;
+    notifyListeners();
+  }
+
+  bool completeWiringToPort(String targetNodeId, int targetPortNumber) {
+    final source = _pendingWireSource;
+    if (source == null) return false;
+    _pendingWireSource = null;
+
+    if (source.nodeId == targetNodeId &&
+        source.portNumber == targetPortNumber) {
+      _lastStatusMessage = 'Cannot connect a port to itself.';
+      notifyListeners();
+      return false;
+    }
+
+    // Prevent connecting two endpoints directly without a switch
+    final srcIsEp = _project.endpoints.any((e) => e.id == source.nodeId);
+    final dstIsEp = _project.endpoints.any((e) => e.id == targetNodeId);
+    if (srcIsEp && dstIsEp) {
+      _lastStatusMessage =
+          'Connect endpoints to a switch port rather than directly to another endpoint.';
+      notifyListeners();
+      return false;
+    }
+
+    if (isPortConnected(targetNodeId, targetPortNumber)) {
+      _lastStatusMessage = 'Target port $targetPortNumber is already occupied.';
+      notifyListeners();
+      return false;
+    }
+
+    connectPorts(
+      source.nodeId,
+      source.portNumber,
+      targetNodeId,
+      targetPortNumber,
+    );
+    return true;
+  }
+
+  bool isPortConnected(String nodeId, int portNumber) {
+    return _project.links.any((l) => l.connectsEndpointPort(nodeId, portNumber));
+  }
+
+  int? firstAvailablePortForNode(String nodeId) {
+    for (final sw in _project.switches) {
+      if (sw.id == nodeId) {
+        for (final port in sw.ports) {
+          if (!isPortConnected(nodeId, port.portNumber)) {
+            return port.portNumber;
+          }
+        }
+        return null;
+      }
+    }
+    for (final ep in _project.endpoints) {
+      if (ep.id == nodeId) {
+        return isPortConnected(nodeId, 1) ? null : 1;
+      }
+    }
+    return null;
+  }
+
+  // --- Simulation Controls ---
+
+  void randomiseSwitchMacs() {
+    for (var i = 0; i < _project.switches.length; i++) {
+      final sw = _project.switches[i];
+      _project.switches[i] = sw.copyWith(
+        macAddress: SwitchNodeInstance.generateRandomLocalMac(_rng),
+      );
+    }
+    _revalidate();
+    _lastStatusMessage =
+        'Randomized switch MAC addresses and re-ran STP election.';
+    notifyListeners();
+  }
+
+  // --- Node & Link Mutations ---
+
+  SwitchNodeInstance addSwitchFromTemplate(
+    SwitchTemplate template, {
+    double? dx,
+    double? dy,
+  }) {
+    final index = _project.switches.length + 1;
+    final vlans = <int, SwitchVlanSettings>{
+      for (final entry in _project.knownVlans.entries)
+        entry.key: SwitchVlanSettings(
+          vlanId: entry.key,
+          vlanName: entry.value,
+          igmpSnoopingEnabled: template.supportsIgmpSnooping && entry.key != 1,
+        ),
+    };
+    final sw = SwitchNodeInstance(
+      id: 'sw-${_uuid.v4().substring(0, 8)}',
+      templateId: template.id,
+      userLabel: '${template.name.split(' ').take(2).join(' ')} #$index',
+      macAddress: SwitchNodeInstance.generateRandomLocalMac(_rng),
+      stpMode: template.supportsStp ? StpMode.rstp : StpMode.disabled,
+      stpPriority: 32768,
+      poeBudgetWatts: template.poeBudgetWatts,
+      supportsStp: template.supportsStp,
+      supportsVlans: template.supportsVlans,
+      supportsIgmpSnooping: template.supportsIgmpSnooping,
+      supportsIgmpQuerier: template.supportsIgmpQuerier,
+      vlanConfigs: vlans,
+      ports: template.generateDefaultPorts(),
+      dx: dx ?? (160.0 + (index * 45) % 420),
+      dy: dy ?? (110.0 + (index * 35) % 240),
+    );
+    _project.switches.add(sw);
+    _revalidate();
+    selectSwitch(sw.id);
+    return sw;
+  }
+
+  EndpointNodeInstance addEndpointFromTemplate(
+    EndpointTemplate template, {
+    double? dx,
+    double? dy,
+  }) {
+    final index = _project.endpoints.length + 1;
+    final ep = EndpointNodeInstance(
+      id: 'ep-${_uuid.v4().substring(0, 8)}',
+      templateId: template.id,
+      userLabel: '${template.name.split(' ').take(2).join(' ')} #$index',
+      category: template.category,
+      nicSpeed: template.nicSpeed,
+      activeTrafficFlows: template.trafficProfiles
+          .map((f) => f.copyWith(id: 'flow-${_uuid.v4().substring(0, 6)}'))
+          .toList(),
+      poeDrawWatts: template.poeDrawWatts,
+      dx: dx ?? (150.0 + (index * 55) % 500),
+      dy: dy ?? (420.0 + (index * 25) % 160),
+    );
+    _project.endpoints.add(ep);
+    _revalidate();
+    selectEndpoint(ep.id);
+    return ep;
+  }
+
+  void moveNode(String nodeId, double dx, double dy) {
+    final clampedX = dx.clamp(16.0, 2200.0);
+    final clampedY = dy.clamp(16.0, 1600.0);
+
+    for (var i = 0; i < _project.switches.length; i++) {
+      if (_project.switches[i].id == nodeId) {
+        _project.switches[i] =
+            _project.switches[i].copyWith(dx: clampedX, dy: clampedY);
+        notifyListeners();
+        return;
+      }
+    }
+    for (var i = 0; i < _project.endpoints.length; i++) {
+      if (_project.endpoints[i].id == nodeId) {
+        _project.endpoints[i] =
+            _project.endpoints[i].copyWith(dx: clampedX, dy: clampedY);
+        notifyListeners();
+        return;
+      }
+    }
+  }
+
+  void connectPorts(
+    String sourceNodeId,
+    int sourcePortNumber,
+    String targetNodeId,
+    int targetPortNumber,
+  ) {
+    final link = NetworkLinkEdge(
+      id: 'lnk-${_uuid.v4().substring(0, 8)}',
+      sourceNodeId: sourceNodeId,
+      sourcePortNumber: sourcePortNumber,
+      targetNodeId: targetNodeId,
+      targetPortNumber: targetPortNumber,
+    );
+    _project.links.add(link);
+    _revalidate();
+    _lastStatusMessage =
+        'Connected Port $sourcePortNumber to Port $targetPortNumber.';
+    selectLink(link.id);
+  }
+
+  void removeLink(String linkId) {
+    _project.links.removeWhere((l) => l.id == linkId);
+    if (_selectedLinkId == linkId) _selectedLinkId = null;
+    _revalidate();
+    notifyListeners();
+  }
+
+  void removeNode(String nodeId) {
+    _project.switches.removeWhere((s) => s.id == nodeId);
+    _project.endpoints.removeWhere((e) => e.id == nodeId);
+    _project.links.removeWhere((l) => l.connectsNode(nodeId));
+    if (_selectedSwitchId == nodeId) {
+      _selectedSwitchId = null;
+      _selectedPortNumber = null;
+    }
+    if (_selectedEndpointId == nodeId) {
+      _selectedEndpointId = null;
+    }
+    if (_pendingWireSource?.nodeId == nodeId) {
+      _pendingWireSource = null;
+    }
+    _revalidate();
+    notifyListeners();
+  }
+
+  void updateSwitch(SwitchNodeInstance updated) {
+    final idx = _project.switches.indexWhere((s) => s.id == updated.id);
+    if (idx < 0) return;
+    _project.switches[idx] = updated;
+    _revalidate();
+    notifyListeners();
+  }
+
+  void updatePort(String switchId, SwitchPortConfig updatedPort) {
+    final idx = _project.switches.indexWhere((s) => s.id == switchId);
+    if (idx < 0) return;
+    final sw = _project.switches[idx];
+    final ports = List<SwitchPortConfig>.from(sw.ports);
+    final pIdx =
+        ports.indexWhere((p) => p.portNumber == updatedPort.portNumber);
+    if (pIdx < 0) return;
+    ports[pIdx] = updatedPort;
+
+    // Ensure any VLAN IDs referenced by the port exist in knownVlans & switch vlanConfigs.
+    final vlanConfigs = Map<int, SwitchVlanSettings>.from(sw.vlanConfigs);
+    for (final v in updatedPort.effectiveVlans(switchSupportsVlans: sw.supportsVlans)) {
+      _project.knownVlans.putIfAbsent(v, () => 'VLAN $v');
+      vlanConfigs.putIfAbsent(
+        v,
+        () => SwitchVlanSettings(
+          vlanId: v,
+          vlanName: _project.knownVlans[v] ?? 'VLAN $v',
+        ),
+      );
+    }
+
+    _project.switches[idx] = sw.copyWith(
+      ports: ports,
+      vlanConfigs: vlanConfigs,
+    );
+    _revalidate();
+    notifyListeners();
+  }
+
+  void updateSwitchVlan(String switchId, SwitchVlanSettings settings) {
+    final idx = _project.switches.indexWhere((s) => s.id == switchId);
+    if (idx < 0) return;
+    final sw = _project.switches[idx];
+    final vlanConfigs = Map<int, SwitchVlanSettings>.from(sw.vlanConfigs);
+    vlanConfigs[settings.vlanId] = settings;
+    _project.knownVlans.putIfAbsent(settings.vlanId, () => settings.vlanName);
+    _project.switches[idx] = sw.copyWith(vlanConfigs: vlanConfigs);
+    _revalidate();
+    notifyListeners();
+  }
+
+  void addKnownVlan(int vlanId, String name) {
+    if (vlanId < 1 || vlanId > 4094) return;
+    final label = name.trim().isEmpty ? 'VLAN $vlanId' : name.trim();
+    _project.knownVlans[vlanId] = label;
+    for (var i = 0; i < _project.switches.length; i++) {
+      final sw = _project.switches[i];
+      if (!sw.vlanConfigs.containsKey(vlanId)) {
+        final nextConfigs = Map<int, SwitchVlanSettings>.from(sw.vlanConfigs);
+        nextConfigs[vlanId] = SwitchVlanSettings(
+          vlanId: vlanId,
+          vlanName: label,
+          igmpSnoopingEnabled: sw.supportsIgmpSnooping,
+        );
+        _project.switches[i] = sw.copyWith(vlanConfigs: nextConfigs);
+      }
+    }
+    _revalidate();
+    notifyListeners();
+  }
+
+  void updateEndpoint(EndpointNodeInstance updated) {
+    final idx = _project.endpoints.indexWhere((e) => e.id == updated.id);
+    if (idx < 0) return;
+    _project.endpoints[idx] = updated;
+    for (final f in updated.activeTrafficFlows) {
+      _project.knownVlans.putIfAbsent(f.defaultVlanId, () => 'VLAN ${f.defaultVlanId}');
+    }
+    _revalidate();
+    notifyListeners();
+  }
+
+  void autoFixLinkVlanSymmetry(String linkId) {
+    final link = _project.links.where((l) => l.id == linkId).firstOrNull;
+    if (link == null) return;
+    final swA = _project.switches
+        .where((s) => s.id == link.sourceNodeId)
+        .firstOrNull;
+    final swB = _project.switches
+        .where((s) => s.id == link.targetNodeId)
+        .firstOrNull;
+    if (swA == null || swB == null) return;
+
+    final portA = swA.portByNumber(link.sourcePortNumber);
+    final portB = swB.portByNumber(link.targetPortNumber);
+    if (portA == null || portB == null) return;
+
+    final unionVlans = {
+      ...portA.effectiveVlans(switchSupportsVlans: swA.supportsVlans),
+      ...portB.effectiveVlans(switchSupportsVlans: swB.supportsVlans),
+      portA.nativeVlan,
+      portB.nativeVlan,
+    };
+    final nativeVlan = portA.nativeVlan;
+
+    updatePort(
+      swA.id,
+      portA.copyWith(
+        portMode: SwitchPortMode.trunk,
+        nativeVlan: nativeVlan,
+        allowedVlans: unionVlans,
+      ),
+    );
+    updatePort(
+      swB.id,
+      portB.copyWith(
+        portMode: SwitchPortMode.trunk,
+        nativeVlan: nativeVlan,
+        allowedVlans: unionVlans,
+      ),
+    );
+    _lastStatusMessage = 'Synchronized trunk VLANs on both ends of link.';
+  }
+
+  // --- Template Library CRUD ---
+
+  Future<void> saveSwitchTemplate(SwitchTemplate template) async {
+    final idx = _switchTemplates.indexWhere((t) => t.id == template.id);
+    if (idx >= 0) {
+      _switchTemplates[idx] = template;
+    } else {
+      _switchTemplates.add(template);
+    }
+    await _saveLibrarySafe();
+    notifyListeners();
+  }
+
+  Future<void> deleteSwitchTemplate(String id) async {
+    _switchTemplates.removeWhere((t) => t.id == id);
+    await _saveLibrarySafe();
+    notifyListeners();
+  }
+
+  Future<void> saveEndpointTemplate(EndpointTemplate template) async {
+    final idx = _endpointTemplates.indexWhere((t) => t.id == template.id);
+    if (idx >= 0) {
+      _endpointTemplates[idx] = template;
+    } else {
+      _endpointTemplates.add(template);
+    }
+    await _saveLibrarySafe();
+    notifyListeners();
+  }
+
+  Future<void> deleteEndpointTemplate(String id) async {
+    _endpointTemplates.removeWhere((t) => t.id == id);
+    await _saveLibrarySafe();
+    notifyListeners();
+  }
+
+  Future<void> resetLibraryDefaults() async {
+    _switchTemplates = DeviceTemplates.defaultSwitchTemplates();
+    _endpointTemplates = DeviceTemplates.defaultEndpointTemplates();
+    await _saveLibrarySafe();
+    notifyListeners();
+  }
+
+  String exportLibraryJson() {
+    return _libraryStorage.exportLibraryJson(
+      TemplateLibraryBundle(
+        switchTemplates: _switchTemplates,
+        endpointTemplates: _endpointTemplates,
+      ),
+    );
+  }
+
+  Future<void> importLibraryJson(String rawJson) async {
+    final imported = _libraryStorage.importLibraryJson(rawJson);
+    if (imported.switchTemplates.isNotEmpty) {
+      _switchTemplates = imported.switchTemplates;
+    }
+    if (imported.endpointTemplates.isNotEmpty) {
+      _endpointTemplates = imported.endpointTemplates;
+    }
+    await _saveLibrarySafe();
+    notifyListeners();
+  }
+
+  Future<void> _saveLibrarySafe() async {
+    try {
+      await _libraryStorage.saveLibrary(
+        TemplateLibraryBundle(
+          switchTemplates: _switchTemplates,
+          endpointTemplates: _endpointTemplates,
+        ),
+      );
+    } catch (_) {
+      // Safe no-op in sandboxed test environments without platform channels
+    }
+  }
+
+  // --- Project Lifecycle & Demos ---
+
+  void newBlankProject() {
+    _project = TopologyProject(name: 'Untitled Topology');
+    clearSelection();
+    _highlightedVlanId = null;
+    _revalidate();
+    notifyListeners();
+  }
+
+  void loadDemoHealthyRing() {
+    _project = DeviceTemplates.healthyReferenceRingDemo();
+    clearSelection();
+    _highlightedVlanId = null;
+    _revalidate();
+    notifyListeners();
+  }
+
+  void loadDemoBrokenRing() {
+    _project = DeviceTemplates.brokenRingFaultDemo();
+    clearSelection();
+    _highlightedVlanId = null;
+    _revalidate();
+    notifyListeners();
+  }
+
+  void loadDemoUnmanagedLoop() {
+    _project = DeviceTemplates.unmanagedLoopAndBroadcastDemo();
+    clearSelection();
+    _highlightedVlanId = null;
+    _revalidate();
+    notifyListeners();
+  }
+
+  Future<void> saveProjectToFile(String filePath) async {
+    await _projectStorage.saveProjectToFile(_project, filePath);
+    _lastStatusMessage = 'Saved topology project to $filePath';
+    notifyListeners();
+  }
+
+  Future<void> loadProjectFromFile(String filePath) async {
+    final loaded = await _projectStorage.loadProjectFromFile(filePath);
+    _project = loaded;
+    clearSelection();
+    _highlightedVlanId = null;
+    _revalidate();
+    _lastStatusMessage = 'Loaded project "${loaded.name}"';
+    notifyListeners();
+  }
+
+  String serializeCurrentProject() =>
+      _projectStorage.serializeProject(_project);
+
+  String buildMarkdownValidationReport() =>
+      _projectStorage.buildMarkdownValidationReport(_project, _validation);
+
+  Future<void> toggleTheme() async {
+    final nextMode = (themeService?.currentMode ?? 'dark') == 'dark'
+        ? 'light'
+        : 'dark';
+    await themeService?.setThemeMode(nextMode);
+  }
+
+  /// Generates vendor-neutral CLI reference summary for the selected switch.
+  String generateCliConfigPreview(SwitchNodeInstance sw) {
+    final buf = StringBuffer();
+    buf.writeln('! Vendor-Neutral Reference Config: ${sw.userLabel}');
+    buf.writeln('! Bridge MAC: ${sw.macAddress}  (BID: ${sw.bridgeIdHex})');
+    if (sw.managementIp != null && sw.managementIp!.isNotEmpty) {
+      buf.writeln('management ip ${sw.managementIp}');
+    }
+    buf.writeln(
+      'spanning-tree mode ${sw.stpMode.name}  ! priority ${sw.stpPriority}${sw.isRootBridge ? " (ROOT BRIDGE)" : ""}',
+    );
+    buf.writeln('!');
+
+    final sortedVlans = sw.vlanConfigs.keys.toList()..sort();
+    for (final vId in sortedVlans) {
+      final cfg = sw.vlanConfigs[vId]!;
+      buf.writeln('vlan $vId  ! ${cfg.vlanName}');
+      if (sw.supportsIgmpSnooping) {
+        buf.writeln(
+          '  ip igmp snooping ${cfg.igmpSnoopingEnabled ? "enable" : "disable"} (${cfg.igmpQuerierVersion.label})',
+        );
+      }
+      if (sw.supportsIgmpQuerier && cfg.igmpQuerierEnabled) {
+        buf.writeln(
+          '  ip igmp snooping querier enable${sw.activeQuerierVlans.contains(vId) ? "  ! ACTIVE QUERIER" : ""}',
+        );
+      }
+    }
+    buf.writeln('!');
+
+    for (final port in sw.ports) {
+      buf.writeln('interface ${port.displayName}  ! ${port.maxSpeed.label}');
+      if (port.portMode == SwitchPortMode.access) {
+        buf.writeln('  switchport mode access');
+        buf.writeln('  switchport access vlan ${port.nativeVlan}');
+      } else {
+        final allowed = (port.allowedVlans.toList()..sort()).join(',');
+        buf.writeln('  switchport mode trunk');
+        buf.writeln('  switchport trunk native vlan ${port.nativeVlan}');
+        buf.writeln('  switchport trunk allowed vlan $allowed');
+      }
+      if (port.poeCapable) {
+        buf.writeln('  power inline ${port.poeEnabled ? "auto" : "never"}');
+      }
+    }
+    return buf.toString();
+  }
+}

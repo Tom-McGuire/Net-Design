@@ -2,7 +2,7 @@ name: net_design
 description: "Vendor-Neutral Network Topology & VLAN/STP Design Sandbox desktop application."
 publish_to: 'none'
 
-version: 0.1.0+1
+version: 0.5.0-beta+1
 
 environment:
   sdk: ^3.13.0
@@ -18,6 +18,7 @@ dependencies:
 
   cupertino_icons: ^1.0.8
   provider: ^6.1.5+1
+  sqlite3: ^3.7.1
   path_provider: ^2.1.6
   path: ^1.9.1
   file_picker: ^13.1.0

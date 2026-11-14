@@ -1,80 +1,105 @@
 import 'dart:async';
+import 'dart:ui' show AppExitResponse;
+
 import 'package:flutter/material.dart';
 import 'package:network_suite_shared/network_suite_shared.dart';
+import 'package:provider/provider.dart';
+
+import 'data/services/suite_theme_service.dart';
+import 'ui/features/sandbox_screen.dart';
+import 'ui/features/sandbox_view_model.dart';
 import 'ui/theme/app_theme.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+
   try {
     await SharedDeviceDatabase.instance.init();
   } catch (e) {
     debugPrint('Shared database initialization notice: $e');
   }
 
-  runApp(const NetDesignApp());
+  final themeService = SuiteThemeService();
+  final initialMode = await themeService.initAndReadTheme();
+  AppTheme.isDark = initialMode != 'light';
+
+  runApp(NetDesignApp(themeService: themeService));
 }
 
 class NetDesignApp extends StatefulWidget {
-  const NetDesignApp({super.key});
+  const NetDesignApp({
+    super.key,
+    this.themeService,
+    this.showStartupAdvisory = true,
+  });
+
+  final SuiteThemeService? themeService;
+  final bool showStartupAdvisory;
 
   @override
   State<NetDesignApp> createState() => _NetDesignAppState();
 }
 
-class _NetDesignAppState extends State<NetDesignApp> {
-  StreamSubscription<void>? _dbSub;
+class _NetDesignAppState extends State<NetDesignApp>
+    with WidgetsBindingObserver {
+  late final SuiteThemeService _themeService;
+  late final SandboxViewModel _viewModel;
+  StreamSubscription<String>? _themeSub;
+  String _themeMode = AppTheme.isDark ? 'dark' : 'light';
 
   @override
   void initState() {
     super.initState();
-    try {
-      _dbSub = SharedDeviceDatabase.instance.onDatabaseChanged.listen((_) {
-        if (mounted) {
-          setState(() {});
-        }
-      });
-    } catch (_) {
-      // Ignored if stream unavailable
+    WidgetsBinding.instance.addObserver(this);
+    _themeService = widget.themeService ?? SuiteThemeService();
+    _viewModel = SandboxViewModel(themeService: _themeService);
+    unawaited(_viewModel.init());
+
+    _themeSub = _themeService.onThemeModeChanged.listen((mode) {
+      if (mounted && mode != _themeMode) {
+        setState(() {
+          _themeMode = mode;
+          AppTheme.isDark = (mode == 'dark');
+        });
+      }
+    });
+  }
+
+  @override
+  Future<AppExitResponse> didRequestAppExit() async {
+    _themeService.dispose();
+    if (SharedDeviceDatabase.instance.isInitialized) {
+      try {
+        SharedDeviceDatabase.instance.close();
+      } catch (_) {}
     }
+    return AppExitResponse.exit;
   }
 
   @override
   void dispose() {
-    _dbSub?.cancel();
+    WidgetsBinding.instance.removeObserver(this);
+    _themeSub?.cancel();
+    if (widget.themeService == null) {
+      _themeService.dispose();
+    }
+    _viewModel.dispose();
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
-    return MaterialApp(
-      title: 'Net Design - Network Topology & Protocol Sandbox',
-      debugShowCheckedModeBanner: false,
-      themeMode: AppTheme.isDark ? ThemeMode.dark : ThemeMode.light,
-      theme: AppTheme.lightTheme(),
-      darkTheme: AppTheme.darkTheme(),
-      home: const Scaffold(
-        body: Center(
-          child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              Icon(Icons.hub_outlined, size: 64, color: Color(0xFF007ACC)),
-              SizedBox(height: 16),
-              Text(
-                'Net Design Sandbox',
-                style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold),
-              ),
-              SizedBox(height: 8),
-              Text(
-                'Layer 2 / Layer 3 Network Topology & Protocol Sandbox',
-                style: TextStyle(fontSize: 14),
-              ),
-              SizedBox(height: 16),
-              Text(
-                'Environment configured for Windows, macOS, and Linux.',
-                style: TextStyle(fontSize: 12),
-              ),
-            ],
-          ),
+    return ChangeNotifierProvider<SandboxViewModel>.value(
+      value: _viewModel,
+      child: MaterialApp(
+        title: 'Net Design - Network Topology & Protocol Sandbox',
+        debugShowCheckedModeBanner: false,
+        themeMode: AppTheme.isDark ? ThemeMode.dark : ThemeMode.light,
+        theme: AppTheme.lightTheme(),
+        darkTheme: AppTheme.darkTheme(),
+        home: KeyedSubtree(
+          key: ValueKey(_themeMode),
+          child: SandboxScreen(showStartupAdvisory: widget.showStartupAdvisory),
         ),
       ),
     );
