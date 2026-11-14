@@ -1,4 +1,4 @@
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 
 import '../widgets/simulation_disclaimer_dialog.dart';
 import '../widgets/top_control_bar.dart';

@@ -2,7 +2,7 @@ name: net_design
 description: "Vendor-Neutral Network Topology & VLAN/STP Design Sandbox desktop application."
 publish_to: 'none'
 
-version: 0.5.0-beta+1
+version: 0.5.1-beta+1
 
 environment:
   sdk: ^3.13.0
@@ -10,6 +10,7 @@ environment:
 dependencies:
   flutter:
     sdk: flutter
+  material_ui: ^1.11.0
 
   network_suite_shared:
     git:
