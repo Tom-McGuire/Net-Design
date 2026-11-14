@@ -148,15 +148,24 @@ class SwitchNodeInstance {
     return null;
   }
 
-  /// Summarizes port counts by speed tier (e.g. `['8x 1G', '2x 10G']`).
+  /// Summarizes port counts by speed tier and media type
+  /// (e.g. `['8x 1G', '2x 10G SFP+']`).
   List<String> get portSummaryPills {
-    final counts = <PortSpeed, int>{};
+    final rj45Counts = <PortSpeed, int>{};
+    final sfpCounts = <PortSpeed, int>{};
     for (final p in ports) {
-      counts[p.maxSpeed] = (counts[p.maxSpeed] ?? 0) + 1;
+      if (p.mediaType == PortMediaType.sfpFibre) {
+        sfpCounts[p.maxSpeed] = (sfpCounts[p.maxSpeed] ?? 0) + 1;
+      } else {
+        rj45Counts[p.maxSpeed] = (rj45Counts[p.maxSpeed] ?? 0) + 1;
+      }
     }
     return [
       for (final speed in PortSpeed.values)
-        if ((counts[speed] ?? 0) > 0) '${counts[speed]}x ${speed.label}',
+        if ((rj45Counts[speed] ?? 0) > 0) '${rj45Counts[speed]}x ${speed.label}',
+      for (final speed in PortMediaType.sfpFibre.allowedSpeeds)
+        if ((sfpCounts[speed] ?? 0) > 0)
+          '${sfpCounts[speed]}x ${speed == PortSpeed.speed10G ? "10G SFP+" : "${speed.label} SFP"}',
     ];
   }
 

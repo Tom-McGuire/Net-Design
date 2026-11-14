@@ -184,7 +184,7 @@ class TopControlBar extends StatelessWidget {
                               ),
                             ),
                             Text(
-                              '${t.nicSpeed.label}${t.poeDrawWatts > 0 ? " • ${t.poeDrawWatts.toStringAsFixed(1)}W PoE" : ""}',
+                              '${t.portsSummaryString}${t.totalPoeDrawWatts > 0 ? " • ${t.totalPoeDrawWatts.toStringAsFixed(1)}W PoE" : ""}',
                               style: TextStyle(
                                 fontSize: 10,
                                 fontFamily: 'monospace',
@@ -249,8 +249,6 @@ class TopControlBar extends StatelessWidget {
                   vm.loadDemoBrokenRing();
                 case 'loop':
                   vm.loadDemoUnmanagedLoop();
-                case 'blank':
-                  vm.newBlankProject();
               }
             },
             itemBuilder: (_) => [
@@ -260,9 +258,11 @@ class TopControlBar extends StatelessWidget {
                   children: [
                     Icon(Icons.verified_outlined, size: 16, color: AppTheme.success),
                     const SizedBox(width: 8),
-                    Text(
-                      'Healthy Touring Ring (Reference)',
-                      style: TextStyle(fontSize: 12, color: AppTheme.textPrimary),
+                    Flexible(
+                      child: Text(
+                        'Healthy Touring Ring (Reference)',
+                        style: TextStyle(fontSize: 12, color: AppTheme.textPrimary),
+                      ),
                     ),
                   ],
                 ),
@@ -273,9 +273,11 @@ class TopControlBar extends StatelessWidget {
                   children: [
                     Icon(Icons.warning_amber, size: 16, color: AppTheme.warning),
                     const SizedBox(width: 8),
-                    Text(
-                      'Fault Demo: Arbitrary Root & VLAN Blackhole',
-                      style: TextStyle(fontSize: 12, color: AppTheme.textPrimary),
+                    Flexible(
+                      child: Text(
+                        'Fault Demo: Arbitrary Root & VLAN Blackhole',
+                        style: TextStyle(fontSize: 12, color: AppTheme.textPrimary),
+                      ),
                     ),
                   ],
                 ),
@@ -286,23 +288,11 @@ class TopControlBar extends StatelessWidget {
                   children: [
                     Icon(Icons.error_outline, size: 16, color: AppTheme.error),
                     const SizedBox(width: 8),
-                    Text(
-                      'Fault Demo: Unmanaged Loop & 100M Flood',
-                      style: TextStyle(fontSize: 12, color: AppTheme.textPrimary),
-                    ),
-                  ],
-                ),
-              ),
-              const PopupMenuDivider(),
-              PopupMenuItem(
-                value: 'blank',
-                child: Row(
-                  children: [
-                    Icon(Icons.note_add_outlined, size: 16, color: AppTheme.textSecondary),
-                    const SizedBox(width: 8),
-                    Text(
-                      'New Blank Canvas',
-                      style: TextStyle(fontSize: 12, color: AppTheme.textPrimary),
+                    Flexible(
+                      child: Text(
+                        'Fault Demo: Unmanaged Loop & 100M Flood',
+                        style: TextStyle(fontSize: 12, color: AppTheme.textPrimary),
+                      ),
                     ),
                   ],
                 ),
@@ -358,12 +348,17 @@ class TopControlBar extends StatelessWidget {
             onSelected: (action) => _handleFileAction(context, vm, action),
             itemBuilder: (_) => [
               PopupMenuItem(
+                value: 'new_blank',
+                child: _menuRow(Icons.note_add_outlined, 'New Blank Canvas'),
+              ),
+              const PopupMenuDivider(),
+              PopupMenuItem(
                 value: 'open',
-                child: _menuRow(Icons.folder_open, 'Open .netdesign Project'),
+                child: _menuRow(Icons.folder_open, 'Open Project'),
               ),
               PopupMenuItem(
                 value: 'save',
-                child: _menuRow(Icons.save_outlined, 'Save .netdesign Project'),
+                child: _menuRow(Icons.save_outlined, 'Save Project'),
               ),
               const PopupMenuDivider(),
               PopupMenuItem(
@@ -392,7 +387,12 @@ class TopControlBar extends StatelessWidget {
       children: [
         Icon(icon, size: 16, color: AppTheme.textSecondary),
         const SizedBox(width: 8),
-        Text(label, style: TextStyle(fontSize: 12, color: AppTheme.textPrimary)),
+        Flexible(
+          child: Text(
+            label,
+            style: TextStyle(fontSize: 12, color: AppTheme.textPrimary),
+          ),
+        ),
       ],
     );
   }
@@ -403,6 +403,8 @@ class TopControlBar extends StatelessWidget {
     String action,
   ) async {
     switch (action) {
+      case 'new_blank':
+        vm.newBlankProject();
       case 'open':
         final pickedFiles = await FilePicker.pickFiles(
           type: FileType.custom,
@@ -418,12 +420,21 @@ class TopControlBar extends StatelessWidget {
         final bytes = Uint8List.fromList(
           utf8.encode(vm.serializeCurrentProject()),
         );
-        await FilePicker.saveFile(
+        final outputUri = await FilePicker.saveFile(
           dialogTitle: 'Save Topology Project',
           fileName:
               '${vm.project.name.toLowerCase().replaceAll(RegExp(r'[^a-z0-9]+'), '_')}.netdesign',
           bytes: bytes,
         );
+        if (outputUri != null) {
+          if (outputUri.scheme == 'file') {
+            await vm.saveProjectToFile(outputUri.toFilePath());
+          } else if (context.mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(content: Text('Saved topology project.')),
+            );
+          }
+        }
       case 'copy_json':
         await Clipboard.setData(
           ClipboardData(text: vm.serializeCurrentProject()),
@@ -545,8 +556,18 @@ class TopControlBar extends StatelessWidget {
                 children: [
                   _VlanFilterChip(
                     label: 'All',
-                    selected: vm.highlightedVlanId == null,
+                    selected: vm.highlightedVlanId == null &&
+                        !vm.isTrunkFilterActive &&
+                        !vm.isStreamTraceActive,
                     onTap: () => vm.setHighlightedVlan(null),
+                  ),
+                  const SizedBox(width: 4),
+                  _VlanFilterChip(
+                    label: 'Trunks',
+                    tooltip:
+                        'Highlight only Trunk links configured symmetrically at both ends',
+                    selected: vm.isTrunkFilterActive,
+                    onTap: () => vm.setTrunkFilterActive(!vm.isTrunkFilterActive),
                   ),
                   const SizedBox(width: 4),
                   for (final vId in vlans) ...[
@@ -580,9 +601,78 @@ class TopControlBar extends StatelessWidget {
             ),
           ),
 
-          const SizedBox(width: 12),
+          const SizedBox(width: 10),
           Container(width: 1, height: 24, color: AppTheme.border),
-          const SizedBox(width: 12),
+          const SizedBox(width: 10),
+
+          // Static Stream Trace selector
+          Icon(
+            Icons.alt_route,
+            size: 15,
+            color: vm.isStreamTraceActive ? AppTheme.success : AppTheme.accent,
+          ),
+          const SizedBox(width: 5),
+          Text(
+            'Trace Stream:',
+            style: TextStyle(
+              fontSize: 11.5,
+              fontWeight: FontWeight.w600,
+              color: vm.isStreamTraceActive
+                  ? AppTheme.success
+                  : AppTheme.textSecondary,
+            ),
+          ),
+          const SizedBox(width: 6),
+          Container(
+            width: 185,
+            height: 28,
+            padding: const EdgeInsets.symmetric(horizontal: 8),
+            decoration: BoxDecoration(
+              color: vm.isStreamTraceActive
+                  ? AppTheme.success.withValues(alpha: 0.14)
+                  : AppTheme.surface,
+              borderRadius: BorderRadius.circular(5),
+              border: Border.all(
+                color:
+                    vm.isStreamTraceActive ? AppTheme.success : AppTheme.border,
+              ),
+            ),
+            child: DropdownButtonHideUnderline(
+              child: DropdownButton<String?>(
+                value: vm.activeStreamTraceTarget != null
+                    ? vm.activeStreamTraceId
+                    : null,
+                isExpanded: true,
+                isDense: true,
+                dropdownColor: AppTheme.surfaceElevated,
+                style: TextStyle(
+                  fontFamily: 'monospace',
+                  fontSize: 10.5,
+                  color: AppTheme.textPrimary,
+                ),
+                items: [
+                  const DropdownMenuItem<String?>(
+                    value: null,
+                    child: Text('None (Normal View)'),
+                  ),
+                  for (final target in vm.availableStreamTraceTargets)
+                    DropdownMenuItem<String?>(
+                      value: target.id,
+                      child: Text(
+                        target.label,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ),
+                ],
+                onChanged: vm.setActiveStreamTrace,
+              ),
+            ),
+          ),
+
+          const SizedBox(width: 10),
+          Container(width: 1, height: 24, color: AppTheme.border),
+          const SizedBox(width: 10),
 
           // Health summary badges
           _HealthBadge(

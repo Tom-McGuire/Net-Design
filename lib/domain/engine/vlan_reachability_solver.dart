@@ -4,6 +4,7 @@ import '../models/network_link_edge.dart';
 import '../models/switch_node_instance.dart';
 import '../models/switch_port_config.dart';
 import '../models/validation_issue.dart';
+import 'multicast_flow_tracer.dart';
 
 /// Pass 2: Link-Level VLAN Symmetry Checks & Per-VLAN BFS Path Tracer.
 class VlanReachabilitySolver {
@@ -17,6 +18,7 @@ class VlanReachabilitySolver {
   }) {
     // 2.1 Evaluate VLANs & symmetry on all links.
     for (final link in links) {
+      if (link.hasMediaMismatch) continue;
       final swA = switchesById[link.sourceNodeId];
       final swB = switchesById[link.targetNodeId];
 
@@ -46,35 +48,20 @@ class VlanReachabilitySolver {
       }
     }
 
-    // Map each endpoint to its attached switch, switch port, and access link.
-    final epAttachment =
-        <String, ({SwitchNodeInstance sw, SwitchPortConfig port, NetworkLinkEdge link})>{};
-    for (final link in links) {
-      final epA = endpointsById[link.sourceNodeId];
-      final epB = endpointsById[link.targetNodeId];
-      final swA = switchesById[link.sourceNodeId];
-      final swB = switchesById[link.targetNodeId];
-
-      if (epA != null && swB != null) {
-        final port = swB.portByNumber(link.targetPortNumber);
-        if (port != null) {
-          epAttachment[epA.id] = (sw: swB, port: port, link: link);
-        }
-      } else if (epB != null && swA != null) {
-        final port = swA.portByNumber(link.sourcePortNumber);
-        if (port != null) {
-          epAttachment[epB.id] = (sw: swA, port: port, link: link);
-        }
-      }
-    }
+    // Map each (endpointId, epPortNumber) to its attached switch, switch port, and access link.
+    final epAttachments = MulticastFlowTracer.buildEndpointAttachments(
+      switchesById: switchesById,
+      endpointsById: endpointsById,
+      links: links,
+    );
 
     // Check endpoint flow VLAN vs connected switch port VLAN.
     for (final ep in endpointsById.values) {
-      final att = epAttachment[ep.id];
-      if (att == null) continue;
-      if (!att.sw.supportsVlans) continue;
-
       for (final flow in ep.activeTrafficFlows) {
+        final att = epAttachments['${ep.id}:${flow.effectivePortNumber}'];
+        if (att == null) continue;
+        if (!att.sw.supportsVlans) continue;
+
         if (!att.port.permitsVlan(flow.defaultVlanId,
             switchSupportsVlans: att.sw.supportsVlans)) {
           issues.add(
@@ -84,7 +71,7 @@ class VlanReachabilitySolver {
               category: IssueCategory.vlan,
               title: 'Endpoint Traffic VLAN Mismatch',
               message:
-                  '${ep.userLabel} (${flow.protocol.label}) expects VLAN ${flow.defaultVlanId}, but ${att.sw.userLabel} Port ${att.port.portNumber} is ${att.port.portMode.label} VLAN ${att.port.nativeVlan}.',
+                  '${ep.userLabel} (${flow.protocol.label}) expects VLAN ${flow.defaultVlanId} on Port ${flow.effectivePortNumber}, but ${att.sw.userLabel} Port ${att.port.portNumber} is ${att.port.portMode.label} VLAN ${att.port.nativeVlan}.',
               recommendation:
                   'Assign ${att.sw.userLabel} Port ${att.port.portNumber} to VLAN ${flow.defaultVlanId} or update the endpoint flow VLAN.',
               nodeId: att.sw.id,
@@ -102,6 +89,7 @@ class VlanReachabilitySolver {
       final isInterSwitch = switchesById.containsKey(l.sourceNodeId) &&
           switchesById.containsKey(l.targetNodeId);
       return isInterSwitch &&
+          !l.hasMediaMismatch &&
           (l.stpState == LinkStpState.forwarding ||
               l.stpState == LinkStpState.loopUnprotected);
     }).toList();
@@ -111,33 +99,26 @@ class VlanReachabilitySolver {
 
     for (var i = 0; i < endpointList.length; i++) {
       final epA = endpointList[i];
-      final attA = epAttachment[epA.id];
-      if (attA == null) continue;
 
       for (var j = 0; j < endpointList.length; j++) {
         if (i == j) continue;
         final epB = endpointList[j];
-        final attB = epAttachment[epB.id];
-        if (attB == null) continue;
 
         for (final flowA in epA.activeTrafficFlows) {
           if (!flowA.direction.isPublisher) continue;
+          final attA = epAttachments['${epA.id}:${flowA.effectivePortNumber}'];
+          if (attA == null) continue;
 
           for (final flowB in epB.activeTrafficFlows) {
             if (!flowB.direction.isSubscriber) continue;
             if (flowA.protocol != flowB.protocol) continue;
+            final attB = epAttachments['${epB.id}:${flowB.effectivePortNumber}'];
+            if (attB == null) continue;
 
-            // Ingress VLAN from switch port (or flow default if unmanaged).
-            final vlanA = attA.sw.supportsVlans
-                ? attA.port.nativeVlan
-                : flowA.defaultVlanId;
-            final vlanB = attB.sw.supportsVlans
-                ? attB.port.nativeVlan
-                : flowB.defaultVlanId;
+            final vlanA = MulticastFlowTracer.effectiveVlanForFlow(flowA, attA);
+            final vlanB = MulticastFlowTracer.effectiveVlanForFlow(flowB, attB);
 
             if (vlanA != vlanB) {
-              // Also check if both flows specifically want the same VLAN
-              // when they are already flagged at the port level above.
               continue;
             }
 
@@ -217,6 +198,8 @@ class VlanReachabilitySolver {
     required SwitchPortConfig portB,
     required List<ValidationIssue> issues,
   }) {
+    link.isValidTrunk = false;
+
     if (!swA.supportsVlans && !swB.supportsVlans) {
       link.activeVlans = {1};
       return;
@@ -320,6 +303,8 @@ class VlanReachabilitySolver {
     final onlyInA = vlansA.difference(vlansB).toList()..sort();
     final onlyInB = vlansB.difference(vlansA).toList()..sort();
     link.prunedVlans = {...onlyInA, ...onlyInB};
+    link.isValidTrunk =
+        !link.hasVlanMismatch && onlyInA.isEmpty && onlyInB.isEmpty;
 
     for (final v in onlyInA) {
       issues.add(

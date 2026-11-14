@@ -32,6 +32,54 @@ enum PortSpeed {
   }
 }
 
+/// Physical port connector / media type.
+enum PortMediaType {
+  rj45('RJ45 Copper', 'RJ45'),
+  sfpFibre('SFP / Fibre', 'SFP');
+
+  const PortMediaType(this.label, this.shortLabel);
+
+  final String label;
+  final String shortLabel;
+
+  List<PortSpeed> get allowedSpeeds => switch (this) {
+        PortMediaType.rj45 => PortSpeed.values,
+        PortMediaType.sfpFibre => const [PortSpeed.speed1G, PortSpeed.speed10G],
+      };
+
+  PortSpeed normalizeSpeed(PortSpeed speed) {
+    if (allowedSpeeds.contains(speed)) return speed;
+    return this == PortMediaType.sfpFibre
+        ? (speed.mbps >= PortSpeed.speed10G.mbps
+            ? PortSpeed.speed10G
+            : PortSpeed.speed1G)
+        : speed;
+  }
+
+  String toJson() => name;
+
+  static PortMediaType fromJson(Object? value) {
+    if (value is String) {
+      for (final item in values) {
+        if (item.name == value || item.label == value) return item;
+      }
+    }
+    return PortMediaType.rj45;
+  }
+}
+
+/// Visual delivery state of a link when tracing a multicast stream.
+enum LinkStreamTraceState {
+  none('None'),
+  delivered('Delivered'),
+  flooded('FLOODED'),
+  igmpPruned('IGMP PRUNED');
+
+  const LinkStreamTraceState(this.label);
+
+  final String label;
+}
+
 /// Generic role category for endpoint devices.
 enum EndpointCategory {
   console('Console', Icons.tune),

@@ -4,6 +4,7 @@ import '../models/switch_node_instance.dart';
 import '../models/topology_project.dart';
 import '../models/validation_issue.dart';
 import 'igmp_domain_solver.dart';
+import 'multicast_flow_tracer.dart';
 import 'resource_budget_solver.dart';
 import 'stp_election_solver.dart';
 import 'vlan_reachability_solver.dart';
@@ -37,12 +38,14 @@ class TopologyValidator {
     this.stpSolver = const StpElectionSolver(),
     this.vlanSolver = const VlanReachabilitySolver(),
     this.igmpSolver = const IgmpDomainSolver(),
+    this.streamTracer = const MulticastFlowTracer(),
     this.budgetSolver = const ResourceBudgetSolver(),
   });
 
   final StpElectionSolver stpSolver;
   final VlanReachabilitySolver vlanSolver;
   final IgmpDomainSolver igmpSolver;
+  final MulticastFlowTracer streamTracer;
   final ResourceBudgetSolver budgetSolver;
 
   ValidationResult validate(TopologyProject project) {
@@ -72,8 +75,24 @@ class TopologyValidator {
         switchesById: switchesById,
         endpointsById: endpointsById,
       );
+      final mediaA = _portOrNicMedia(
+        nodeId: link.sourceNodeId,
+        portNumber: link.sourcePortNumber,
+        switchesById: switchesById,
+        endpointsById: endpointsById,
+      );
+      final mediaB = _portOrNicMedia(
+        nodeId: link.targetNodeId,
+        portNumber: link.targetPortNumber,
+        switchesById: switchesById,
+        endpointsById: endpointsById,
+      );
+      link.hasMediaMismatch = mediaA != mediaB;
       link.negotiatedSpeed = PortSpeed.minSpeed(speedA, speedB);
       link.hasSpeedStepDown = speedA != speedB;
+      link.isSfpStepDown = mediaA == PortMediaType.sfpFibre &&
+          mediaB == PortMediaType.sfpFibre &&
+          speedA != speedB;
     }
 
     final issues = <ValidationIssue>[];
@@ -101,7 +120,15 @@ class TopologyValidator {
       issues: issues,
     );
 
-    // Pass 4: Link Bandwidth Utilization & PoE Budget Aggregation
+    // Pass 3b: Multicast Stream Spec, Duplicate TX & Orphan RX Checks
+    streamTracer.validateStreams(
+      switchesById: switchesById,
+      endpointsById: endpointsById,
+      links: project.links,
+      issues: issues,
+    );
+
+    // Pass 4: Link Bandwidth Utilization, Media Checks, Speed Step-Down & PoE Budget Aggregation
     budgetSolver.solve(
       switchesById: switchesById,
       endpointsById: endpointsById,
@@ -151,8 +178,25 @@ class TopologyValidator {
     }
     final ep = endpointsById[nodeId];
     if (ep != null) {
-      return ep.nicSpeed;
+      return ep.portByNumber(portNumber).effectiveSpeed;
     }
     return PortSpeed.speed1G;
+  }
+
+  PortMediaType _portOrNicMedia({
+    required String nodeId,
+    required int portNumber,
+    required Map<String, SwitchNodeInstance> switchesById,
+    required Map<String, EndpointNodeInstance> endpointsById,
+  }) {
+    final sw = switchesById[nodeId];
+    if (sw != null) {
+      return sw.portByNumber(portNumber)?.mediaType ?? PortMediaType.rj45;
+    }
+    final ep = endpointsById[nodeId];
+    if (ep != null) {
+      return ep.portByNumber(portNumber).mediaType;
+    }
+    return PortMediaType.rj45;
   }
 }

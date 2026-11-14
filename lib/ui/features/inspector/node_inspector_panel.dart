@@ -1,6 +1,10 @@
+import 'dart:math';
+
 import 'package:material_ui/material_ui.dart';
 import 'package:provider/provider.dart';
 
+import '../../../domain/engine/multicast_flow_tracer.dart';
+import '../../../domain/engine/multicast_stream_resolver.dart';
 import '../../../domain/models/endpoint_node_instance.dart';
 import '../../../domain/models/endpoint_template.dart';
 import '../../../domain/models/enums.dart';
@@ -21,14 +25,12 @@ class NodeInspectorPanel extends StatefulWidget {
 class _NodeInspectorPanelState extends State<NodeInspectorPanel> {
   final TextEditingController _labelCtrl = TextEditingController();
   final TextEditingController _ipCtrl = TextEditingController();
-  final TextEditingController _poeCtrl = TextEditingController();
   String? _syncedEntityKey;
 
   @override
   void dispose() {
     _labelCtrl.dispose();
     _ipCtrl.dispose();
-    _poeCtrl.dispose();
     super.dispose();
   }
 
@@ -47,7 +49,6 @@ class _NodeInspectorPanelState extends State<NodeInspectorPanel> {
       _syncedEntityKey = key;
       _labelCtrl.text = ep.userLabel;
       _ipCtrl.text = ep.ipAddress ?? '';
-      _poeCtrl.text = ep.poeDrawWatts.toStringAsFixed(1);
     }
   }
 
@@ -217,6 +218,7 @@ class _NodeInspectorPanelState extends State<NodeInspectorPanel> {
             Expanded(
               child: DropdownButtonFormField<StpMode>(
                 initialValue: sw.stpMode,
+                isExpanded: true,
                 decoration: const InputDecoration(labelText: 'STP Mode'),
                 dropdownColor: AppTheme.surfaceElevated,
                 style: TextStyle(fontSize: 12, color: AppTheme.textPrimary),
@@ -237,6 +239,7 @@ class _NodeInspectorPanelState extends State<NodeInspectorPanel> {
             Expanded(
               child: DropdownButtonFormField<int>(
                 initialValue: sw.stpPriority,
+                isExpanded: true,
                 decoration: const InputDecoration(labelText: 'STP Priority'),
                 dropdownColor: AppTheme.surfaceElevated,
                 style: TextStyle(
@@ -304,7 +307,8 @@ class _NodeInspectorPanelState extends State<NodeInspectorPanel> {
   ) {
     final isElected = sw.activeQuerierVlans.contains(cfg.vlanId);
     return Container(
-      padding: const EdgeInsets.all(8),
+      padding: const EdgeInsets.all(10),
+      margin: const EdgeInsets.only(bottom: 4),
       decoration: BoxDecoration(
         color: AppTheme.surfaceHigh,
         borderRadius: BorderRadius.circular(6),
@@ -354,60 +358,135 @@ class _NodeInspectorPanelState extends State<NodeInspectorPanel> {
                 ),
             ],
           ),
-          const SizedBox(height: 4),
+          const SizedBox(height: 8),
+          Divider(height: 1, color: AppTheme.border),
+          const SizedBox(height: 8),
           Row(
             children: [
               Expanded(
-                child: CheckboxListTile(
-                  contentPadding: EdgeInsets.zero,
-                  dense: true,
-                  title: Text(
-                    'Snooping',
-                    style: TextStyle(fontSize: 11, color: AppTheme.textPrimary),
-                  ),
+                child: _buildIgmpToggleBox(
+                  label: 'Snooping',
                   value: cfg.igmpSnoopingEnabled,
-                  onChanged: sw.supportsIgmpSnooping
-                      ? (v) => vm.updateSwitchVlan(
-                            sw.id,
-                            cfg.copyWith(igmpSnoopingEnabled: v ?? false),
-                          )
-                      : null,
+                  enabled: sw.supportsIgmpSnooping,
+                  onChanged: (v) => vm.updateSwitchVlan(
+                    sw.id,
+                    cfg.copyWith(igmpSnoopingEnabled: v),
+                  ),
                 ),
               ),
+              const SizedBox(width: 8),
               Expanded(
-                child: CheckboxListTile(
-                  contentPadding: EdgeInsets.zero,
-                  dense: true,
-                  title: Text(
-                    'Querier',
-                    style: TextStyle(fontSize: 11, color: AppTheme.textPrimary),
-                  ),
+                child: _buildIgmpToggleBox(
+                  label: 'Querier',
                   value: cfg.igmpQuerierEnabled,
-                  onChanged: sw.supportsIgmpQuerier
-                      ? (v) => vm.updateSwitchVlan(
-                            sw.id,
-                            cfg.copyWith(igmpQuerierEnabled: v ?? false),
-                          )
-                      : null,
+                  enabled: sw.supportsIgmpQuerier,
+                  onChanged: (v) => vm.updateSwitchVlan(
+                    sw.id,
+                    cfg.copyWith(igmpQuerierEnabled: v),
+                  ),
                 ),
               ),
             ],
           ),
-          DropdownButtonFormField<IgmpVersion>(
-            initialValue: cfg.igmpQuerierVersion,
-            decoration: const InputDecoration(labelText: 'IGMP Version'),
-            dropdownColor: AppTheme.surfaceElevated,
-            style: TextStyle(fontSize: 11.5, color: AppTheme.textPrimary),
-            items: IgmpVersion.values
-                .map((v) => DropdownMenuItem(value: v, child: Text(v.label)))
-                .toList(),
-            onChanged: (v) {
-              if (v != null) {
-                vm.updateSwitchVlan(sw.id, cfg.copyWith(igmpQuerierVersion: v));
-              }
-            },
+          const SizedBox(height: 8),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+            decoration: BoxDecoration(
+              color: AppTheme.surface,
+              borderRadius: BorderRadius.circular(5),
+              border: Border.all(color: AppTheme.border),
+            ),
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                Text(
+                  'IGMP Version',
+                  style: TextStyle(
+                    fontSize: 11,
+                    color: AppTheme.textSecondary,
+                  ),
+                ),
+                DropdownButtonHideUnderline(
+                  child: DropdownButton<IgmpVersion>(
+                    isDense: true,
+                    value: cfg.igmpQuerierVersion,
+                    dropdownColor: AppTheme.surfaceElevated,
+                    style: TextStyle(
+                      fontFamily: 'monospace',
+                      fontSize: 11.5,
+                      fontWeight: FontWeight.w600,
+                      color: AppTheme.textPrimary,
+                    ),
+                    items: IgmpVersion.values
+                        .map(
+                          (v) =>
+                              DropdownMenuItem(value: v, child: Text(v.label)),
+                        )
+                        .toList(),
+                    onChanged: (v) {
+                      if (v != null) {
+                        vm.updateSwitchVlan(
+                          sw.id,
+                          cfg.copyWith(igmpQuerierVersion: v),
+                        );
+                      }
+                    },
+                  ),
+                ),
+              ],
+            ),
           ),
         ],
+      ),
+    );
+  }
+
+  Widget _buildIgmpToggleBox({
+    required String label,
+    required bool value,
+    required bool enabled,
+    required ValueChanged<bool> onChanged,
+  }) {
+    final activeColor = value ? AppTheme.accent : AppTheme.border;
+    return InkWell(
+      onTap: enabled ? () => onChanged(!value) : null,
+      borderRadius: BorderRadius.circular(5),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+        decoration: BoxDecoration(
+          color: AppTheme.surface,
+          borderRadius: BorderRadius.circular(5),
+          border: Border.all(
+            color: value ? activeColor.withValues(alpha: 0.6) : AppTheme.border,
+          ),
+        ),
+        child: Row(
+          children: [
+            SizedBox(
+              width: 18,
+              height: 18,
+              child: Checkbox(
+                value: value,
+                materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                visualDensity: VisualDensity.compact,
+                onChanged: enabled ? (v) => onChanged(v ?? false) : null,
+              ),
+            ),
+            const SizedBox(width: 7),
+            Expanded(
+              child: Text(
+                label,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                  fontSize: 11,
+                  fontWeight: FontWeight.w500,
+                  color: enabled ? AppTheme.textPrimary : AppTheme.textMuted,
+                ),
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -418,7 +497,14 @@ class _NodeInspectorPanelState extends State<NodeInspectorPanel> {
     EndpointNodeInstance ep,
   ) {
     _syncForEndpoint(ep);
-    final isConnected = vm.isPortConnected(ep.id, 1);
+    final effectivePorts = ep.effectivePorts;
+    final swMap = {for (final s in vm.project.switches) s.id: s};
+    final epMap = {for (final e in vm.project.endpoints) e.id: e};
+    final atts = MulticastFlowTracer.buildEndpointAttachments(
+      switchesById: swMap,
+      endpointsById: epMap,
+      links: vm.project.links,
+    );
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -447,51 +533,6 @@ class _NodeInspectorPanelState extends State<NodeInspectorPanel> {
         ),
         const SizedBox(height: 8),
 
-        Row(
-          children: [
-            Expanded(
-              child: DropdownButtonFormField<PortSpeed>(
-                initialValue: ep.nicSpeed,
-                decoration: const InputDecoration(labelText: 'NIC Speed'),
-                dropdownColor: AppTheme.surfaceElevated,
-                style: TextStyle(
-                  fontFamily: 'monospace',
-                  fontSize: 12,
-                  color: AppTheme.textPrimary,
-                ),
-                items: PortSpeed.values
-                    .map(
-                      (s) => DropdownMenuItem(value: s, child: Text(s.label)),
-                    )
-                    .toList(),
-                onChanged: (s) {
-                  if (s != null) vm.updateEndpoint(ep.copyWith(nicSpeed: s));
-                },
-              ),
-            ),
-            const SizedBox(width: 8),
-            Expanded(
-              child: TextField(
-                controller: _poeCtrl,
-                keyboardType: TextInputType.number,
-                style: TextStyle(
-                  fontFamily: 'monospace',
-                  fontSize: 12,
-                  color: AppTheme.textPrimary,
-                ),
-                decoration: const InputDecoration(labelText: 'PoE Draw (W)'),
-                onChanged: (val) {
-                  final watts = double.tryParse(val.trim());
-                  if (watts != null && watts >= 0) {
-                    vm.updateEndpoint(ep.copyWith(poeDrawWatts: watts));
-                  }
-                },
-              ),
-            ),
-          ],
-        ),
-        const SizedBox(height: 8),
-
         TextField(
           controller: _ipCtrl,
           style: TextStyle(
@@ -513,24 +554,38 @@ class _NodeInspectorPanelState extends State<NodeInspectorPanel> {
           },
         ),
         const SizedBox(height: 10),
-
-        if (!isConnected)
-          SizedBox(
-            width: double.infinity,
-            child: FilledButton.icon(
-              onPressed: () => vm.startWiringFromPort(ep.id, 1),
-              style: FilledButton.styleFrom(
-                backgroundColor: AppTheme.accent,
-                foregroundColor: Colors.white,
-              ),
-              icon: const Icon(Icons.cable, size: 15),
-              label: const Text('Wire NIC to Switch Port'),
-            ),
-          ),
-
-        const SizedBox(height: 12),
         const Divider(),
-        const SizedBox(height: 10),
+        const SizedBox(height: 8),
+
+        // Multi-NIC Ports section
+        Row(
+          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          children: [
+            Text(
+              'Network Interfaces (${effectivePorts.length})',
+              style: TextStyle(
+                fontSize: 11.5,
+                fontWeight: FontWeight.w700,
+                color: AppTheme.textSecondary,
+              ),
+            ),
+            TextButton.icon(
+              onPressed: effectivePorts.length < 8
+                  ? () => _addEndpointNicPort(vm, ep)
+                  : null,
+              icon: const Icon(Icons.add, size: 14),
+              label: const Text('Add NIC Port', style: TextStyle(fontSize: 11)),
+            ),
+          ],
+        ),
+        for (var i = 0; i < effectivePorts.length; i++) ...[
+          _buildEndpointNicCard(vm, ep, i, effectivePorts[i]),
+          const SizedBox(height: 6),
+        ],
+
+        const SizedBox(height: 8),
+        const Divider(),
+        const SizedBox(height: 8),
 
         Row(
           mainAxisAlignment: MainAxisAlignment.spaceBetween,
@@ -552,97 +607,284 @@ class _NodeInspectorPanelState extends State<NodeInspectorPanel> {
         ),
 
         for (var idx = 0; idx < ep.activeTrafficFlows.length; idx++) ...[
-          _buildTrafficFlowCard(vm, ep, idx, ep.activeTrafficFlows[idx]),
+          Builder(
+            builder: (context) {
+              final flow = ep.activeTrafficFlows[idx];
+              final att = atts['${ep.id}:${flow.effectivePortNumber}'];
+              final effectiveVlan =
+                  MulticastFlowTracer.effectiveVlanForFlow(flow, att);
+              return _TrafficFlowInspectorCard(
+                key: ValueKey('ep-flow-${ep.id}-${flow.id}'),
+                vm: vm,
+                endpoint: ep,
+                flow: flow,
+                effectiveVlan: effectiveVlan,
+                onChanged: (updatedFlow) {
+                  final next =
+                      List<TrafficRequirement>.from(ep.activeTrafficFlows);
+                  next[idx] = updatedFlow;
+                  vm.updateEndpoint(ep.copyWith(activeTrafficFlows: next));
+                },
+                onDelete: () {
+                  final next =
+                      List<TrafficRequirement>.from(ep.activeTrafficFlows)
+                        ..removeAt(idx);
+                  vm.updateEndpoint(ep.copyWith(activeTrafficFlows: next));
+                },
+              );
+            },
+          ),
           const SizedBox(height: 6),
         ],
       ],
     );
   }
 
-  Widget _buildTrafficFlowCard(
+  void _addEndpointNicPort(SandboxViewModel vm, EndpointNodeInstance ep) {
+    final current = List<EndpointPortConfig>.from(ep.effectivePorts);
+    final nextNum = current.map((p) => p.portNumber).fold<int>(0, max) + 1;
+    current.add(
+      EndpointPortConfig(
+        portNumber: nextNum,
+        label: 'NIC $nextNum',
+        mediaType: PortMediaType.rj45,
+        speed: PortSpeed.speed1G,
+      ),
+    );
+    vm.updateEndpoint(ep.copyWith(ports: current));
+  }
+
+  void _removeEndpointNicPort(
     SandboxViewModel vm,
     EndpointNodeInstance ep,
     int index,
-    TrafficRequirement flow,
   ) {
+    final current = List<EndpointPortConfig>.from(ep.effectivePorts);
+    if (current.length <= 1) return;
+    final removed = current.removeAt(index);
+    final link = vm.linkForPort(ep.id, removed.portNumber);
+    if (link != null) {
+      vm.removeLink(link.id);
+    }
+    final fallbackPort = current.first.portNumber;
+    final updatedFlows = [
+      for (final f in ep.activeTrafficFlows)
+        f.effectivePortNumber == removed.portNumber
+            ? f.copyWith(boundPortNumber: fallbackPort)
+            : f,
+    ];
+    vm.updateEndpoint(
+      ep.copyWith(ports: current, activeTrafficFlows: updatedFlows),
+    );
+  }
+
+  Widget _buildEndpointNicCard(
+    SandboxViewModel vm,
+    EndpointNodeInstance ep,
+    int index,
+    EndpointPortConfig port,
+  ) {
+    final effectivePorts = ep.effectivePorts;
+    final isSfp = port.mediaType == PortMediaType.sfpFibre;
+    final link = vm.linkForPort(ep.id, port.portNumber);
+    final canCompleteWire = vm.pendingWireSource != null &&
+        link == null &&
+        vm.isPortMediaCompatibleWithPendingWire(ep.id, port.portNumber);
+
     return Container(
       padding: const EdgeInsets.all(8),
       decoration: BoxDecoration(
         color: AppTheme.surfaceHigh,
         borderRadius: BorderRadius.circular(6),
-        border: Border.all(color: AppTheme.border),
+        border: Border.all(
+          color: canCompleteWire
+              ? AppTheme.accent
+              : (isSfp ? AppTheme.accent.withValues(alpha: 0.45) : AppTheme.border),
+        ),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Row(
             children: [
-              Expanded(
+              Container(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                decoration: BoxDecoration(
+                  color: isSfp
+                      ? AppTheme.accent.withValues(alpha: 0.16)
+                      : AppTheme.surface,
+                  borderRadius: BorderRadius.circular(4),
+                  border: Border.all(
+                    color: isSfp ? AppTheme.accent : AppTheme.border,
+                  ),
+                ),
                 child: Text(
-                  flow.displayPill,
+                  'NIC ${port.portNumber} • ${port.mediaSpeedLabel}',
                   style: TextStyle(
                     fontFamily: 'monospace',
-                    fontSize: 11,
+                    fontSize: 10.5,
                     fontWeight: FontWeight.bold,
-                    color: AppTheme.textPrimary,
+                    color: isSfp ? AppTheme.accent : AppTheme.textPrimary,
                   ),
                 ),
               ),
-              IconButton(
-                visualDensity: VisualDensity.compact,
-                icon: Icon(Icons.close, size: 14, color: AppTheme.error),
-                onPressed: () {
-                  final next = List<TrafficRequirement>.from(ep.activeTrafficFlows)
-                    ..removeAt(index);
-                  vm.updateEndpoint(ep.copyWith(activeTrafficFlows: next));
-                },
-              ),
+              const Spacer(),
+              if (link != null)
+                OutlinedButton.icon(
+                  onPressed: () => vm.removeLink(link.id),
+                  style: OutlinedButton.styleFrom(
+                    foregroundColor: AppTheme.error,
+                    side: BorderSide(
+                      color: AppTheme.error.withValues(alpha: 0.5),
+                    ),
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 8,
+                      vertical: 3,
+                    ),
+                  ),
+                  icon: const Icon(Icons.link_off, size: 12),
+                  label: const Text('Unplug', style: TextStyle(fontSize: 10.5)),
+                )
+              else
+                FilledButton.icon(
+                  onPressed: () {
+                    if (vm.pendingWireSource != null) {
+                      vm.completeWiringToPort(ep.id, port.portNumber);
+                    } else {
+                      vm.startWiringFromPort(ep.id, port.portNumber);
+                    }
+                  },
+                  style: FilledButton.styleFrom(
+                    backgroundColor: AppTheme.accent,
+                    foregroundColor: Colors.white,
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 8,
+                      vertical: 3,
+                    ),
+                  ),
+                  icon: const Icon(Icons.cable, size: 12),
+                  label: Text(
+                    canCompleteWire ? 'Connect Here' : 'Wire NIC',
+                    style: const TextStyle(fontSize: 10.5),
+                  ),
+                ),
+              if (effectivePorts.length > 1)
+                IconButton(
+                  visualDensity: VisualDensity.compact,
+                  tooltip: 'Remove NIC Port',
+                  onPressed: () => _removeEndpointNicPort(vm, ep, index),
+                  icon: Icon(Icons.close, size: 14, color: AppTheme.error),
+                ),
             ],
+          ),
+          const SizedBox(height: 6),
+          TextFormField(
+            key: ValueKey('ep-nic-lbl-${ep.id}-${port.portNumber}'),
+            initialValue: port.label ?? '',
+            style: TextStyle(fontSize: 11.5, color: AppTheme.textPrimary),
+            decoration: const InputDecoration(
+              labelText: 'NIC Label (Optional)',
+              hintText: 'Primary / Control / Video SFP+',
+            ),
+            onChanged: (val) {
+              final next = List<EndpointPortConfig>.from(effectivePorts);
+              next[index] = port.copyWith(label: val.trim());
+              vm.updateEndpoint(ep.copyWith(ports: next));
+            },
           ),
           const SizedBox(height: 6),
           Row(
             children: [
               Expanded(
-                child: DropdownButtonFormField<TrafficDirection>(
-                  initialValue: flow.direction,
-                  decoration: const InputDecoration(labelText: 'Direction'),
+                flex: 3,
+                child: DropdownButtonFormField<PortMediaType>(
+                  key: ValueKey(
+                    'ep-nic-media-${ep.id}-${port.portNumber}-${port.mediaType.name}',
+                  ),
+                  initialValue: port.mediaType,
+                  isExpanded: true,
+                  decoration: const InputDecoration(labelText: 'Media'),
                   dropdownColor: AppTheme.surfaceElevated,
                   style: TextStyle(fontSize: 11, color: AppTheme.textPrimary),
-                  items: TrafficDirection.values
-                      .map((d) => DropdownMenuItem(value: d, child: Text(d.label)))
+                  items: PortMediaType.values
+                      .map(
+                        (m) => DropdownMenuItem(
+                          value: m,
+                          child: Text(m.shortLabel),
+                        ),
+                      )
                       .toList(),
-                  onChanged: (dir) {
-                    if (dir == null) return;
-                    final next =
-                        List<TrafficRequirement>.from(ep.activeTrafficFlows);
-                    next[index] = flow.copyWith(direction: dir);
-                    vm.updateEndpoint(ep.copyWith(activeTrafficFlows: next));
+                  onChanged: (m) {
+                    if (m == null) return;
+                    final next = List<EndpointPortConfig>.from(effectivePorts);
+                    next[index] = port.copyWith(
+                      mediaType: m,
+                      speed: m.normalizeSpeed(port.speed),
+                      poeDrawWatts:
+                          m == PortMediaType.sfpFibre ? 0.0 : port.poeDrawWatts,
+                    );
+                    vm.updateEndpoint(ep.copyWith(ports: next));
                   },
                 ),
               ),
               const SizedBox(width: 6),
-              SizedBox(
-                width: 96,
-                child: DropdownButtonFormField<int>(
-                  initialValue: vm.availableVlanIds.contains(flow.defaultVlanId)
-                      ? flow.defaultVlanId
-                      : vm.availableVlanIds.first,
-                  decoration: const InputDecoration(labelText: 'VLAN'),
+              Expanded(
+                flex: 3,
+                child: DropdownButtonFormField<PortSpeed>(
+                  key: ValueKey(
+                    'ep-nic-spd-${ep.id}-${port.portNumber}-${port.mediaType.name}-${port.effectiveSpeed.name}',
+                  ),
+                  initialValue: port.effectiveSpeed,
+                  isExpanded: true,
+                  decoration: const InputDecoration(labelText: 'Speed'),
                   dropdownColor: AppTheme.surfaceElevated,
                   style: TextStyle(
                     fontFamily: 'monospace',
                     fontSize: 11,
                     color: AppTheme.textPrimary,
                   ),
-                  items: vm.availableVlanIds
-                      .map((v) => DropdownMenuItem(value: v, child: Text('V$v')))
+                  items: port.mediaType.allowedSpeeds
+                      .map(
+                        (s) => DropdownMenuItem(
+                          value: s,
+                          child: Text(s.label),
+                        ),
+                      )
                       .toList(),
-                  onChanged: (v) {
-                    if (v == null) return;
-                    final next =
-                        List<TrafficRequirement>.from(ep.activeTrafficFlows);
-                    next[index] = flow.copyWith(defaultVlanId: v);
-                    vm.updateEndpoint(ep.copyWith(activeTrafficFlows: next));
+                  onChanged: (s) {
+                    if (s == null) return;
+                    final next = List<EndpointPortConfig>.from(effectivePorts);
+                    next[index] = port.copyWith(speed: s);
+                    vm.updateEndpoint(ep.copyWith(ports: next));
+                  },
+                ),
+              ),
+              const SizedBox(width: 6),
+              Expanded(
+                flex: 3,
+                child: TextFormField(
+                  key: ValueKey(
+                    'ep-nic-poe-${ep.id}-${port.portNumber}-$isSfp',
+                  ),
+                  initialValue: port.effectivePoeDrawWatts.toStringAsFixed(1),
+                  enabled: !isSfp,
+                  keyboardType: TextInputType.number,
+                  style: TextStyle(
+                    fontFamily: 'monospace',
+                    fontSize: 11,
+                    color: isSfp ? AppTheme.textMuted : AppTheme.textPrimary,
+                  ),
+                  decoration: InputDecoration(
+                    labelText: isSfp ? 'No PoE' : 'PoE (W)',
+                  ),
+                  onChanged: (val) {
+                    final watts = double.tryParse(val.trim());
+                    if (watts != null && watts >= 0) {
+                      final next = List<EndpointPortConfig>.from(effectivePorts);
+                      next[index] = port.copyWith(poeDrawWatts: watts);
+                      vm.updateEndpoint(ep.copyWith(ports: next));
+                    }
                   },
                 ),
               ),
@@ -658,107 +900,230 @@ class _NodeInspectorPanelState extends State<NodeInspectorPanel> {
     SandboxViewModel vm,
     EndpointNodeInstance ep,
   ) async {
+    final effectivePorts = ep.effectivePorts;
     var proto = TrafficProtocol.sacn;
     var dir = TrafficDirection.txPublisher;
-    var bw = 4.0;
+    var bw = 1.0;
     var vlan = 20;
+    var portNumber = effectivePorts.first.portNumber;
+    var sacnSpec = '1-4';
+    var mcastSpec = '';
 
     final created = await showDialog<TrafficRequirement?>(
       context: context,
       builder: (ctx) => StatefulBuilder(
-        builder: (ctx, setStateDialog) => AlertDialog(
-          backgroundColor: AppTheme.surfaceElevated,
-          title: Text(
-            'Add Traffic Flow',
-            style: TextStyle(fontSize: 15, color: AppTheme.textPrimary),
-          ),
-          content: SizedBox(
-            width: 340,
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                DropdownButtonFormField<TrafficProtocol>(
-                  initialValue: proto,
-                  decoration: const InputDecoration(labelText: 'Protocol'),
-                  dropdownColor: AppTheme.surfaceElevated,
-                  items: TrafficProtocol.values
-                      .map((p) => DropdownMenuItem(value: p, child: Text(p.label)))
-                      .toList(),
-                  onChanged: (val) {
-                    if (val == null) return;
-                    setStateDialog(() {
-                      proto = val;
-                      bw = val.defaultUnitMbps;
-                      vlan = val.defaultVlan;
-                    });
-                  },
-                ),
-                const SizedBox(height: 8),
-                DropdownButtonFormField<TrafficDirection>(
-                  initialValue: dir,
-                  decoration: const InputDecoration(labelText: 'Direction'),
-                  dropdownColor: AppTheme.surfaceElevated,
-                  items: TrafficDirection.values
-                      .map((d) => DropdownMenuItem(value: d, child: Text(d.label)))
-                      .toList(),
-                  onChanged: (val) {
-                    if (val != null) setStateDialog(() => dir = val);
-                  },
-                ),
-                const SizedBox(height: 8),
-                TextFormField(
-                  initialValue: bw.toString(),
-                  keyboardType: TextInputType.number,
-                  decoration: const InputDecoration(
-                    labelText: 'Estimated Bandwidth (Mbps)',
-                  ),
-                  onChanged: (val) {
-                    final parsed = double.tryParse(val.trim());
-                    if (parsed != null && parsed >= 0) bw = parsed;
-                  },
-                ),
-                const SizedBox(height: 8),
-                TextFormField(
-                  initialValue: vlan.toString(),
-                  keyboardType: TextInputType.number,
-                  decoration: const InputDecoration(labelText: 'VLAN ID'),
-                  onChanged: (val) {
-                    final parsed = int.tryParse(val.trim());
-                    if (parsed != null && parsed >= 1 && parsed <= 4094) {
-                      vlan = parsed;
-                    }
-                  },
-                ),
-              ],
+        builder: (ctx, setStateDialog) {
+          final isSacnMcast = proto == TrafficProtocol.sacn &&
+              proto.defaultDelivery == DeliveryType.multicast;
+          final draftFlow = TrafficRequirement(
+            id: 'draft',
+            protocol: proto,
+            direction: dir,
+            deliveryType: proto.defaultDelivery,
+            estimatedBandwidthMbps: bw,
+            requiresIgmp: proto.defaultRequiresIgmp,
+            defaultVlanId: vlan,
+            boundPortNumber: portNumber,
+            sacnUniverseSpec: isSacnMcast && sacnSpec.trim().isNotEmpty
+                ? sacnSpec.trim()
+                : null,
+            multicastGroupSpec: !isSacnMcast && mcastSpec.trim().isNotEmpty
+                ? mcastSpec.trim()
+                : null,
+          );
+          final specError = MulticastStreamResolver.validateFlowSpec(draftFlow);
+
+          return AlertDialog(
+            backgroundColor: AppTheme.surfaceElevated,
+            title: Text(
+              'Add Traffic Flow',
+              style: TextStyle(fontSize: 15, color: AppTheme.textPrimary),
             ),
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.of(ctx).pop(),
-              child: const Text('Cancel'),
-            ),
-            FilledButton(
-              style: FilledButton.styleFrom(
-                backgroundColor: AppTheme.accent,
-                foregroundColor: Colors.white,
+            content: SizedBox(
+              width: 360,
+              child: SingleChildScrollView(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    DropdownButtonFormField<TrafficProtocol>(
+                      initialValue: proto,
+                      decoration: const InputDecoration(labelText: 'Protocol'),
+                      dropdownColor: AppTheme.surfaceElevated,
+                      items: TrafficProtocol.values
+                          .map((p) =>
+                              DropdownMenuItem(value: p, child: Text(p.label)))
+                          .toList(),
+                      onChanged: (val) {
+                        if (val == null) return;
+                        setStateDialog(() {
+                          proto = val;
+                          bw = val == TrafficProtocol.sacn
+                              ? 1.0
+                              : val.defaultUnitMbps;
+                          vlan = val.defaultVlan;
+                        });
+                      },
+                    ),
+                    const SizedBox(height: 8),
+                    DropdownButtonFormField<TrafficDirection>(
+                      initialValue: dir,
+                      decoration: const InputDecoration(labelText: 'Direction'),
+                      dropdownColor: AppTheme.surfaceElevated,
+                      items: TrafficDirection.values
+                          .map((d) =>
+                              DropdownMenuItem(value: d, child: Text(d.label)))
+                          .toList(),
+                      onChanged: (val) {
+                        if (val != null) setStateDialog(() => dir = val);
+                      },
+                    ),
+                    if (effectivePorts.length > 1) ...[
+                      const SizedBox(height: 8),
+                      DropdownButtonFormField<int>(
+                        initialValue: portNumber,
+                        decoration:
+                            const InputDecoration(labelText: 'Bound NIC Port'),
+                        dropdownColor: AppTheme.surfaceElevated,
+                        items: effectivePorts
+                            .map(
+                              (p) => DropdownMenuItem(
+                                value: p.portNumber,
+                                child: Text(p.displayName),
+                              ),
+                            )
+                            .toList(),
+                        onChanged: (val) {
+                          if (val != null) {
+                            setStateDialog(() => portNumber = val);
+                          }
+                        },
+                      ),
+                    ],
+                    const SizedBox(height: 8),
+                    if (isSacnMcast) ...[
+                      TextFormField(
+                        initialValue: sacnSpec,
+                        style: TextStyle(
+                          fontFamily: 'monospace',
+                          fontSize: 12,
+                          color: AppTheme.textPrimary,
+                        ),
+                        decoration: const InputDecoration(
+                          labelText: 'sACN Universes (e.g. 1-8, 20)',
+                          hintText: '0.25 Mbps per universe',
+                        ),
+                        onChanged: (val) {
+                          setStateDialog(() {
+                            sacnSpec = val;
+                            final parsed =
+                                MulticastStreamResolver.parseSacnUniverses(val);
+                            if (parsed.error == null &&
+                                parsed.universes.isNotEmpty) {
+                              bw = MulticastStreamResolver.sacnBandwidthMbps(
+                                parsed.universes.length,
+                              );
+                            }
+                          });
+                        },
+                      ),
+                      const SizedBox(height: 8),
+                    ] else if (proto.defaultDelivery ==
+                        DeliveryType.multicast) ...[
+                      TextFormField(
+                        initialValue: mcastSpec,
+                        style: TextStyle(
+                          fontFamily: 'monospace',
+                          fontSize: 12,
+                          color: AppTheme.textPrimary,
+                        ),
+                        decoration: const InputDecoration(
+                          labelText:
+                              'Multicast IP / Range (optional, e.g. 239.69.0.1-4)',
+                        ),
+                        onChanged: (val) {
+                          setStateDialog(() => mcastSpec = val);
+                        },
+                      ),
+                      const SizedBox(height: 8),
+                    ],
+                    TextFormField(
+                      key: ValueKey('add-flow-bw-${proto.name}-$sacnSpec'),
+                      initialValue: bw.toString(),
+                      keyboardType: TextInputType.number,
+                      decoration: const InputDecoration(
+                        labelText: 'Estimated Bandwidth (Mbps)',
+                      ),
+                      onChanged: (val) {
+                        final parsed = double.tryParse(val.trim());
+                        if (parsed != null && parsed >= 0) bw = parsed;
+                      },
+                    ),
+                    const SizedBox(height: 8),
+                    TextFormField(
+                      key: ValueKey('add-flow-vlan-${proto.name}'),
+                      initialValue: vlan.toString(),
+                      keyboardType: TextInputType.number,
+                      decoration: const InputDecoration(labelText: 'VLAN ID'),
+                      onChanged: (val) {
+                        final parsed = int.tryParse(val.trim());
+                        if (parsed != null && parsed >= 1 && parsed <= 4094) {
+                          vlan = parsed;
+                        }
+                      },
+                    ),
+                    if (specError != null) ...[
+                      const SizedBox(height: 6),
+                      Text(
+                        specError,
+                        style: TextStyle(fontSize: 11, color: AppTheme.error),
+                      ),
+                    ],
+                  ],
+                ),
               ),
-              onPressed: () {
-                Navigator.of(ctx).pop(
-                  TrafficRequirement(
-                    id: 'flow-${DateTime.now().microsecondsSinceEpoch}',
-                    protocol: proto,
-                    direction: dir,
-                    deliveryType: proto.defaultDelivery,
-                    estimatedBandwidthMbps: bw,
-                    requiresIgmp: proto.defaultRequiresIgmp,
-                    defaultVlanId: vlan,
-                  ),
-                );
-              },
-              child: const Text('Add'),
             ),
-          ],
-        ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.of(ctx).pop(),
+                child: const Text('Cancel'),
+              ),
+              FilledButton(
+                style: FilledButton.styleFrom(
+                  backgroundColor: AppTheme.accent,
+                  foregroundColor: Colors.white,
+                ),
+                onPressed: specError != null
+                    ? null
+                    : () {
+                        Navigator.of(ctx).pop(
+                          TrafficRequirement(
+                            id: 'flow-${DateTime.now().microsecondsSinceEpoch}',
+                            protocol: proto,
+                            direction: dir,
+                            deliveryType: proto.defaultDelivery,
+                            estimatedBandwidthMbps: bw,
+                            requiresIgmp: proto.defaultRequiresIgmp,
+                            defaultVlanId: vlan,
+                            boundPortNumber: portNumber,
+                            sacnUniverseSpec:
+                                isSacnMcast && sacnSpec.trim().isNotEmpty
+                                    ? sacnSpec.trim()
+                                    : null,
+                            multicastGroupSpec: !isSacnMcast &&
+                                    proto.defaultDelivery ==
+                                        DeliveryType.multicast &&
+                                    mcastSpec.trim().isNotEmpty
+                                ? mcastSpec.trim()
+                                : null,
+                          ),
+                        );
+                      },
+                child: const Text('Add'),
+              ),
+            ],
+          );
+        },
       ),
     );
 
@@ -802,6 +1167,21 @@ class _NodeInspectorPanelState extends State<NodeInspectorPanel> {
       children: [
         _kvCard('Endpoints', '$nameA (P${link.sourcePortNumber}) ↔ $nameB (P${link.targetPortNumber})'),
         const SizedBox(height: 8),
+        if (link.hasMediaMismatch) ...[
+          _kvCard(
+            'Physical Media Compatibility',
+            'MISMATCH: RJ45 copper connected directly to SFP/Fibre port — link non-functional.',
+            valueColor: AppTheme.error,
+          ),
+          const SizedBox(height: 8),
+        ] else if (link.isSfpStepDown) ...[
+          _kvCard(
+            'Physical Media Compatibility',
+            '10G SFP+ ↔ 1G SFP Step-Down — check 1G SFP compatibility in 10G SFP+ cage.',
+            valueColor: AppTheme.warning,
+          ),
+          const SizedBox(height: 8),
+        ],
         _kvCard('Negotiated Speed', '${link.negotiatedSpeed.label}${link.hasSpeedStepDown ? " (Stepped Down)" : ""}'),
         const SizedBox(height: 8),
         _kvCard(
@@ -815,6 +1195,28 @@ class _NodeInspectorPanelState extends State<NodeInspectorPanel> {
           'Estimated Load',
           '${link.estimatedLoadMbps.toStringAsFixed(2)} Mbps (${link.utilizationPercent.toStringAsFixed(1)}%)',
         ),
+        if (vm.isStreamTraceActive &&
+            link.streamTraceState != LinkStreamTraceState.none) ...[
+          const SizedBox(height: 8),
+          _kvCard(
+            'Traced Stream Flow',
+            switch (link.streamTraceState) {
+              LinkStreamTraceState.delivered =>
+                'DELIVERED: ${link.tracedStreamCount} stream(s) • ${link.tracedStreamMbps.toStringAsFixed(2)} Mbps',
+              LinkStreamTraceState.flooded =>
+                'FLOODED (No IGMP Snooping): ${link.tracedStreamCount} stream(s) • ${link.tracedStreamMbps.toStringAsFixed(2)} Mbps',
+              LinkStreamTraceState.igmpPruned =>
+                'IGMP PRUNED (Zero Active Subscribers Downstream)',
+              LinkStreamTraceState.none => '',
+            },
+            valueColor: switch (link.streamTraceState) {
+              LinkStreamTraceState.delivered => AppTheme.success,
+              LinkStreamTraceState.flooded => AppTheme.warning,
+              LinkStreamTraceState.igmpPruned => AppTheme.textMuted,
+              LinkStreamTraceState.none => AppTheme.textPrimary,
+            },
+          ),
+        ],
         const SizedBox(height: 8),
         _kvCard(
           'Carried VLANs',
@@ -918,9 +1320,397 @@ class _NodeInspectorPanelState extends State<NodeInspectorPanel> {
           '1. Click any Switch, Port, Endpoint, or Cable on the canvas to edit settings.\n'
               '2. Click a free port (or Cable icon) to wire links.\n'
               '3. Use "Randomise MACs" to test STP tie-breaking.\n'
-              '4. Use "Highlight VLAN" to trace VLAN reachability and trunk pruning.',
+              '4. Use "Highlight VLAN" or "Trace Stream" to inspect multicast pruning.',
         ),
       ],
+    );
+  }
+}
+
+class _TrafficFlowInspectorCard extends StatefulWidget {
+  const _TrafficFlowInspectorCard({
+    super.key,
+    required this.vm,
+    required this.endpoint,
+    required this.flow,
+    required this.effectiveVlan,
+    required this.onChanged,
+    required this.onDelete,
+  });
+
+  final SandboxViewModel vm;
+  final EndpointNodeInstance endpoint;
+  final TrafficRequirement flow;
+  final int effectiveVlan;
+  final ValueChanged<TrafficRequirement> onChanged;
+  final VoidCallback onDelete;
+
+  @override
+  State<_TrafficFlowInspectorCard> createState() =>
+      _TrafficFlowInspectorCardState();
+}
+
+class _TrafficFlowInspectorCardState extends State<_TrafficFlowInspectorCard> {
+  late final TextEditingController _sacnCtrl;
+  late final TextEditingController _mcastCtrl;
+  late final TextEditingController _mbpsCtrl;
+
+  @override
+  void initState() {
+    super.initState();
+    _sacnCtrl = TextEditingController(
+      text: widget.flow.sacnUniverseSpec ?? '',
+    );
+    _mcastCtrl = TextEditingController(
+      text: widget.flow.multicastGroupSpec ?? '',
+    );
+    _mbpsCtrl = TextEditingController(
+      text: widget.flow.estimatedBandwidthMbps.toStringAsFixed(2),
+    );
+  }
+
+  @override
+  void didUpdateWidget(covariant _TrafficFlowInspectorCard oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    final newSacn = widget.flow.sacnUniverseSpec ?? '';
+    if (newSacn != _sacnCtrl.text && newSacn != (oldWidget.flow.sacnUniverseSpec ?? '')) {
+      _sacnCtrl.text = newSacn;
+    }
+    final newMcast = widget.flow.multicastGroupSpec ?? '';
+    if (newMcast != _mcastCtrl.text && newMcast != (oldWidget.flow.multicastGroupSpec ?? '')) {
+      _mcastCtrl.text = newMcast;
+    }
+    if (widget.flow.estimatedBandwidthMbps !=
+        oldWidget.flow.estimatedBandwidthMbps) {
+      final formatted = widget.flow.estimatedBandwidthMbps.toStringAsFixed(2);
+      final currentParsed = double.tryParse(_mbpsCtrl.text.trim());
+      if (currentParsed != widget.flow.estimatedBandwidthMbps) {
+        _mbpsCtrl.text = formatted;
+      }
+    }
+  }
+
+  @override
+  void dispose() {
+    _sacnCtrl.dispose();
+    _mcastCtrl.dispose();
+    _mbpsCtrl.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final vm = widget.vm;
+    final ep = widget.endpoint;
+    final flow = widget.flow;
+    final effectivePorts = ep.effectivePorts;
+    final isSacnMcast = flow.protocol == TrafficProtocol.sacn &&
+        flow.deliveryType == DeliveryType.multicast;
+    final isOtherMcast = flow.protocol != TrafficProtocol.sacn &&
+        flow.deliveryType == DeliveryType.multicast;
+    final specError = MulticastStreamResolver.validateFlowSpec(flow);
+    final resolvedStreams = specError == null
+        ? MulticastStreamResolver.resolveFlowStreams(
+            flow,
+            effectiveVlanId: widget.effectiveVlan,
+          )
+        : const <ResolvedMulticastStream>[];
+    final rxQuickPicks =
+        (flow.direction == TrafficDirection.rxSubscriber &&
+                flow.deliveryType == DeliveryType.multicast)
+            ? vm.advertisedTxStreamChipsForVlan(
+                widget.effectiveVlan,
+                flow.protocol,
+                excludeEndpointId: ep.id,
+              )
+            : const [];
+
+    return Container(
+      padding: const EdgeInsets.all(8),
+      decoration: BoxDecoration(
+        color: AppTheme.surfaceHigh,
+        borderRadius: BorderRadius.circular(6),
+        border: Border.all(
+          color: specError != null ? AppTheme.error : AppTheme.border,
+        ),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Expanded(
+                child: Text(
+                  flow.displayPill,
+                  style: TextStyle(
+                    fontFamily: 'monospace',
+                    fontSize: 11,
+                    fontWeight: FontWeight.bold,
+                    color: AppTheme.textPrimary,
+                  ),
+                ),
+              ),
+              IconButton(
+                visualDensity: VisualDensity.compact,
+                icon: Icon(Icons.close, size: 14, color: AppTheme.error),
+                onPressed: widget.onDelete,
+              ),
+            ],
+          ),
+          const SizedBox(height: 6),
+          Row(
+            children: [
+              Expanded(
+                child: DropdownButtonFormField<TrafficDirection>(
+                  key: ValueKey('flow-dir-${ep.id}-${flow.id}-${flow.direction.name}'),
+                  initialValue: flow.direction,
+                  isExpanded: true,
+                  decoration: const InputDecoration(labelText: 'Direction'),
+                  dropdownColor: AppTheme.surfaceElevated,
+                  style: TextStyle(fontSize: 11, color: AppTheme.textPrimary),
+                  items: TrafficDirection.values
+                      .map((d) => DropdownMenuItem(value: d, child: Text(d.label)))
+                      .toList(),
+                  onChanged: (dir) {
+                    if (dir != null) {
+                      widget.onChanged(flow.copyWith(direction: dir));
+                    }
+                  },
+                ),
+              ),
+              const SizedBox(width: 6),
+              SizedBox(
+                width: 84,
+                child: DropdownButtonFormField<int>(
+                  key: ValueKey('flow-vlan-${ep.id}-${flow.id}-${flow.defaultVlanId}'),
+                  initialValue: vm.availableVlanIds.contains(flow.defaultVlanId)
+                      ? flow.defaultVlanId
+                      : vm.availableVlanIds.first,
+                  isExpanded: true,
+                  decoration: const InputDecoration(labelText: 'VLAN'),
+                  dropdownColor: AppTheme.surfaceElevated,
+                  style: TextStyle(
+                    fontFamily: 'monospace',
+                    fontSize: 11,
+                    color: AppTheme.textPrimary,
+                  ),
+                  items: vm.availableVlanIds
+                      .map((v) => DropdownMenuItem(value: v, child: Text('V$v')))
+                      .toList(),
+                  onChanged: (v) {
+                    if (v != null) {
+                      widget.onChanged(flow.copyWith(defaultVlanId: v));
+                    }
+                  },
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 6),
+          Row(
+            children: [
+              if (effectivePorts.length > 1) ...[
+                Expanded(
+                  child: DropdownButtonFormField<int>(
+                    key: ValueKey(
+                      'flow-nic-${ep.id}-${flow.id}-${flow.effectivePortNumber}',
+                    ),
+                    initialValue: effectivePorts
+                            .any((p) => p.portNumber == flow.effectivePortNumber)
+                        ? flow.effectivePortNumber
+                        : effectivePorts.first.portNumber,
+                    isExpanded: true,
+                    decoration: const InputDecoration(labelText: 'NIC Port'),
+                    dropdownColor: AppTheme.surfaceElevated,
+                    style: TextStyle(
+                      fontFamily: 'monospace',
+                      fontSize: 11,
+                      color: AppTheme.textPrimary,
+                    ),
+                    items: effectivePorts
+                        .map(
+                          (p) => DropdownMenuItem(
+                            value: p.portNumber,
+                            child: Text('NIC ${p.portNumber}'),
+                          ),
+                        )
+                        .toList(),
+                    onChanged: (pNum) {
+                      if (pNum != null) {
+                        widget.onChanged(flow.copyWith(boundPortNumber: pNum));
+                      }
+                    },
+                  ),
+                ),
+                const SizedBox(width: 6),
+              ],
+              Expanded(
+                child: TextField(
+                  controller: _mbpsCtrl,
+                  keyboardType: TextInputType.number,
+                  style: TextStyle(
+                    fontFamily: 'monospace',
+                    fontSize: 11,
+                    color: AppTheme.textPrimary,
+                  ),
+                  decoration: const InputDecoration(labelText: 'Mbps'),
+                  onChanged: (val) {
+                    final parsed = double.tryParse(val.trim());
+                    if (parsed != null && parsed >= 0) {
+                      widget.onChanged(
+                        flow.copyWith(estimatedBandwidthMbps: parsed),
+                      );
+                    }
+                  },
+                ),
+              ),
+            ],
+          ),
+          if (isSacnMcast) ...[
+            const SizedBox(height: 6),
+            TextField(
+              controller: _sacnCtrl,
+              style: TextStyle(
+                fontFamily: 'monospace',
+                fontSize: 11,
+                color: AppTheme.textPrimary,
+              ),
+              decoration: const InputDecoration(
+                labelText: 'sACN Universes (e.g. 1-8, 20)',
+                hintText: '0.25 Mbps per universe',
+              ),
+              onChanged: (val) {
+                final trimmed = val.trim();
+                final parsed =
+                    MulticastStreamResolver.parseSacnUniverses(trimmed);
+                final autoBw =
+                    parsed.error == null && parsed.universes.isNotEmpty
+                        ? MulticastStreamResolver.sacnBandwidthMbps(
+                            parsed.universes.length,
+                          )
+                        : flow.estimatedBandwidthMbps;
+                if (parsed.error == null && parsed.universes.isNotEmpty) {
+                  _mbpsCtrl.text = autoBw.toStringAsFixed(2);
+                }
+                widget.onChanged(
+                  flow.copyWith(
+                    sacnUniverseSpec: trimmed,
+                    clearSacnUniverseSpec: trimmed.isEmpty,
+                    estimatedBandwidthMbps: autoBw,
+                  ),
+                );
+              },
+            ),
+            if (resolvedStreams.isNotEmpty) ...[
+              const SizedBox(height: 3),
+              Text(
+                '${resolvedStreams.length} stream(s): '
+                '${resolvedStreams.first.multicastIp}'
+                '${resolvedStreams.length > 1 ? " .. ${resolvedStreams.last.multicastIp}" : ""}',
+                style: TextStyle(
+                  fontFamily: 'monospace',
+                  fontSize: 9.5,
+                  color: AppTheme.textSecondary,
+                ),
+              ),
+            ],
+          ] else if (isOtherMcast) ...[
+            const SizedBox(height: 6),
+            TextField(
+              controller: _mcastCtrl,
+              style: TextStyle(
+                fontFamily: 'monospace',
+                fontSize: 11,
+                color: AppTheme.textPrimary,
+              ),
+              decoration: const InputDecoration(
+                labelText: 'Multicast Group(s) (optional)',
+                hintText: 'e.g. 239.69.0.1-4',
+              ),
+              onChanged: (val) {
+                final trimmed = val.trim();
+                widget.onChanged(
+                  flow.copyWith(
+                    multicastGroupSpec: trimmed,
+                    clearMulticastGroupSpec: trimmed.isEmpty,
+                  ),
+                );
+              },
+            ),
+            if (resolvedStreams.isNotEmpty) ...[
+              const SizedBox(height: 3),
+              Text(
+                '${resolvedStreams.length} group(s): '
+                '${resolvedStreams.first.multicastIp}'
+                '${resolvedStreams.length > 1 ? " .. ${resolvedStreams.last.multicastIp}" : ""}',
+                style: TextStyle(
+                  fontFamily: 'monospace',
+                  fontSize: 9.5,
+                  color: AppTheme.textSecondary,
+                ),
+              ),
+            ],
+          ],
+          if (specError != null) ...[
+            const SizedBox(height: 4),
+            Text(
+              specError,
+              style: TextStyle(fontSize: 10.5, color: AppTheme.error),
+            ),
+          ],
+          if (rxQuickPicks.isNotEmpty) ...[
+            const SizedBox(height: 6),
+            Text(
+              'Quick-Pick TX on VLAN ${widget.effectiveVlan}:',
+              style: TextStyle(fontSize: 10, color: AppTheme.textSecondary),
+            ),
+            const SizedBox(height: 3),
+            Wrap(
+              spacing: 4,
+              runSpacing: 4,
+              children: [
+                for (final chip in rxQuickPicks)
+                  ActionChip(
+                    visualDensity: VisualDensity.compact,
+                    backgroundColor: AppTheme.accent.withValues(alpha: 0.12),
+                    side: BorderSide(
+                      color: AppTheme.accent.withValues(alpha: 0.45),
+                    ),
+                    label: Text(
+                      chip.summaryLabel,
+                      style: TextStyle(
+                        fontFamily: 'monospace',
+                        fontSize: 9.5,
+                        color: AppTheme.accent,
+                      ),
+                    ),
+                    onPressed: () {
+                      if (chip.sacnUniverseSpec != null) {
+                        _sacnCtrl.text = chip.sacnUniverseSpec!;
+                        _mbpsCtrl.text = chip.bandwidthMbps.toStringAsFixed(2);
+                        widget.onChanged(
+                          flow.copyWith(
+                            sacnUniverseSpec: chip.sacnUniverseSpec,
+                            estimatedBandwidthMbps: chip.bandwidthMbps,
+                          ),
+                        );
+                      } else if (chip.multicastGroupSpec != null) {
+                        _mcastCtrl.text = chip.multicastGroupSpec!;
+                        _mbpsCtrl.text = chip.bandwidthMbps.toStringAsFixed(2);
+                        widget.onChanged(
+                          flow.copyWith(
+                            multicastGroupSpec: chip.multicastGroupSpec,
+                            estimatedBandwidthMbps: chip.bandwidthMbps,
+                          ),
+                        );
+                      }
+                    },
+                  ),
+              ],
+            ),
+          ],
+        ],
+      ),
     );
   }
 }

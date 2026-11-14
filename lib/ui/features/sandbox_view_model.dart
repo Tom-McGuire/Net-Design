@@ -7,6 +7,8 @@ import '../../data/services/device_templates.dart';
 import '../../data/services/library_storage_service.dart';
 import '../../data/services/project_storage_service.dart';
 import '../../data/services/suite_theme_service.dart';
+import '../../domain/engine/multicast_flow_tracer.dart';
+import '../../domain/engine/multicast_stream_resolver.dart';
 import '../../domain/engine/topology_validator.dart';
 import '../../domain/models/endpoint_node_instance.dart';
 import '../../domain/models/endpoint_template.dart';
@@ -70,6 +72,24 @@ class SandboxViewModel extends ChangeNotifier {
 
   int? _highlightedVlanId;
   int? get highlightedVlanId => _highlightedVlanId;
+
+  bool _isTrunkFilterActive = false;
+  bool get isTrunkFilterActive => _isTrunkFilterActive;
+
+  String? _activeStreamTraceId;
+  String? get activeStreamTraceId => _activeStreamTraceId;
+  bool get isStreamTraceActive => activeStreamTraceTarget != null;
+
+  List<StreamTraceTarget> get availableStreamTraceTargets =>
+      MulticastFlowTracer.buildTraceTargets(_project);
+
+  StreamTraceTarget? get activeStreamTraceTarget {
+    if (_activeStreamTraceId == null) return null;
+    for (final target in availableStreamTraceTargets) {
+      if (target.id == _activeStreamTraceId) return target;
+    }
+    return null;
+  }
 
   ({String nodeId, int portNumber})? _pendingWireSource;
   ({String nodeId, int portNumber})? get pendingWireSource =>
@@ -161,6 +181,11 @@ class SandboxViewModel extends ChangeNotifier {
 
   void _revalidate() {
     _validation = _validator.validate(_project);
+    final traceTarget = activeStreamTraceTarget;
+    if (traceTarget == null) {
+      _activeStreamTraceId = null;
+    }
+    MulticastFlowTracer.applyTrace(project: _project, target: traceTarget);
   }
 
   void clearStatusMessage() {
@@ -194,7 +219,58 @@ class SandboxViewModel extends ChangeNotifier {
 
   void setHighlightedVlan(int? vlanId) {
     _highlightedVlanId = vlanId;
+    _isTrunkFilterActive = false;
+    _activeStreamTraceId = null;
+    MulticastFlowTracer.applyTrace(project: _project, target: null);
     notifyListeners();
+  }
+
+  void setTrunkFilterActive(bool active) {
+    _isTrunkFilterActive = active;
+    if (active) {
+      _highlightedVlanId = null;
+      _activeStreamTraceId = null;
+      MulticastFlowTracer.applyTrace(project: _project, target: null);
+    }
+    notifyListeners();
+  }
+
+  void setActiveStreamTrace(String? traceId) {
+    _activeStreamTraceId = traceId;
+    if (traceId != null) {
+      _highlightedVlanId = null;
+      _isTrunkFilterActive = false;
+    }
+    MulticastFlowTracer.applyTrace(
+      project: _project,
+      target: activeStreamTraceTarget,
+    );
+    notifyListeners();
+  }
+
+  NetworkLinkEdge? linkForPort(String nodeId, int portNumber) {
+    for (final l in _project.links) {
+      if (l.connectsEndpointPort(nodeId, portNumber)) return l;
+    }
+    return null;
+  }
+
+  bool isPortValidTrunk(String switchId, int portNumber) {
+    final link = linkForPort(switchId, portNumber);
+    return link != null && link.isValidTrunk;
+  }
+
+  bool doesPortCarryHighlightedVlanWorking(
+    SwitchNodeInstance sw,
+    SwitchPortConfig port,
+    int vlanId,
+  ) {
+    if (!port.permitsVlan(vlanId, switchSupportsVlans: sw.supportsVlans)) {
+      return false;
+    }
+    final link = linkForPort(sw.id, port.portNumber);
+    if (link == null) return false;
+    return link.activeVlans.contains(vlanId) && !link.hasVlanMismatch;
   }
 
   void selectSwitch(String? switchId, {int? portNumber}) {
@@ -302,6 +378,34 @@ class SandboxViewModel extends ChangeNotifier {
     notifyListeners();
   }
 
+  PortMediaType? portMediaType(String nodeId, int portNumber) {
+    for (final sw in _project.switches) {
+      if (sw.id == nodeId) {
+        return sw.portByNumber(portNumber)?.mediaType;
+      }
+    }
+    for (final ep in _project.endpoints) {
+      if (ep.id == nodeId) {
+        return ep.portByNumber(portNumber).mediaType;
+      }
+    }
+    return null;
+  }
+
+  PortMediaType? get pendingWireMediaType {
+    final src = _pendingWireSource;
+    if (src == null) return null;
+    return portMediaType(src.nodeId, src.portNumber);
+  }
+
+  bool isPortMediaCompatibleWithPendingWire(String nodeId, int portNumber) {
+    final pendingMedia = pendingWireMediaType;
+    if (pendingMedia == null) return true;
+    final targetMedia = portMediaType(nodeId, portNumber);
+    if (targetMedia == null) return false;
+    return targetMedia == pendingMedia;
+  }
+
   bool completeWiringToPort(String targetNodeId, int targetPortNumber) {
     final source = _pendingWireSource;
     if (source == null) return false;
@@ -330,6 +434,15 @@ class SandboxViewModel extends ChangeNotifier {
       return false;
     }
 
+    final srcMedia = portMediaType(source.nodeId, source.portNumber);
+    final dstMedia = portMediaType(targetNodeId, targetPortNumber);
+    if (srcMedia != null && dstMedia != null && srcMedia != dstMedia) {
+      _lastStatusMessage =
+          'Media mismatch: cannot connect ${srcMedia.label} to ${dstMedia.label}. Connect RJ45 to RJ45 and SFP/Fibre to SFP/Fibre.';
+      notifyListeners();
+      return false;
+    }
+
     connectPorts(
       source.nodeId,
       source.portNumber,
@@ -343,11 +456,16 @@ class SandboxViewModel extends ChangeNotifier {
     return _project.links.any((l) => l.connectsEndpointPort(nodeId, portNumber));
   }
 
-  int? firstAvailablePortForNode(String nodeId) {
+  int? firstAvailablePortForNode(
+    String nodeId, {
+    PortMediaType? requiredMedia,
+  }) {
+    final mediaFilter = requiredMedia ?? pendingWireMediaType;
     for (final sw in _project.switches) {
       if (sw.id == nodeId) {
         for (final port in sw.ports) {
-          if (!isPortConnected(nodeId, port.portNumber)) {
+          if (!isPortConnected(nodeId, port.portNumber) &&
+              (mediaFilter == null || port.mediaType == mediaFilter)) {
             return port.portNumber;
           }
         }
@@ -356,7 +474,13 @@ class SandboxViewModel extends ChangeNotifier {
     }
     for (final ep in _project.endpoints) {
       if (ep.id == nodeId) {
-        return isPortConnected(nodeId, 1) ? null : 1;
+        for (final port in ep.effectivePorts) {
+          if (!isPortConnected(nodeId, port.portNumber) &&
+              (mediaFilter == null || port.mediaType == mediaFilter)) {
+            return port.portNumber;
+          }
+        }
+        return null;
       }
     }
     return null;
@@ -428,6 +552,7 @@ class SandboxViewModel extends ChangeNotifier {
       userLabel: '${template.name.split(' ').take(2).join(' ')} #$index',
       category: template.category,
       nicSpeed: template.nicSpeed,
+      ports: List<EndpointPortConfig>.from(template.effectivePorts),
       activeTrafficFlows: template.trafficProfiles
           .map((f) => f.copyWith(id: 'flow-${_uuid.v4().substring(0, 6)}'))
           .toList(),
@@ -436,6 +561,12 @@ class SandboxViewModel extends ChangeNotifier {
       dy: dy ?? (420.0 + (index * 25) % 160),
     );
     _project.endpoints.add(ep);
+    for (final f in ep.activeTrafficFlows) {
+      _project.knownVlans.putIfAbsent(
+        f.defaultVlanId,
+        () => 'VLAN ${f.defaultVlanId}',
+      );
+    }
     _revalidate();
     selectEndpoint(ep.id);
     return ep;
@@ -715,6 +846,8 @@ class SandboxViewModel extends ChangeNotifier {
     _project = TopologyProject(name: 'Untitled Topology');
     clearSelection();
     _highlightedVlanId = null;
+    _isTrunkFilterActive = false;
+    _activeStreamTraceId = null;
     _revalidate();
     notifyListeners();
   }
@@ -723,6 +856,8 @@ class SandboxViewModel extends ChangeNotifier {
     _project = DeviceTemplates.healthyReferenceRingDemo();
     clearSelection();
     _highlightedVlanId = null;
+    _isTrunkFilterActive = false;
+    _activeStreamTraceId = null;
     _revalidate();
     notifyListeners();
   }
@@ -731,6 +866,8 @@ class SandboxViewModel extends ChangeNotifier {
     _project = DeviceTemplates.brokenRingFaultDemo();
     clearSelection();
     _highlightedVlanId = null;
+    _isTrunkFilterActive = false;
+    _activeStreamTraceId = null;
     _revalidate();
     notifyListeners();
   }
@@ -739,6 +876,8 @@ class SandboxViewModel extends ChangeNotifier {
     _project = DeviceTemplates.unmanagedLoopAndBroadcastDemo();
     clearSelection();
     _highlightedVlanId = null;
+    _isTrunkFilterActive = false;
+    _activeStreamTraceId = null;
     _revalidate();
     notifyListeners();
   }
@@ -754,9 +893,87 @@ class SandboxViewModel extends ChangeNotifier {
     _project = loaded;
     clearSelection();
     _highlightedVlanId = null;
+    _isTrunkFilterActive = false;
+    _activeStreamTraceId = null;
     _revalidate();
     _lastStatusMessage = 'Loaded project "${loaded.name}"';
     notifyListeners();
+  }
+
+  /// Returns TX-advertised sACN / multicast stream specs on [vlanId] for quick-pick RX subscription chips.
+  List<({
+    String sourceLabel,
+    String? sacnUniverseSpec,
+    String? multicastGroupSpec,
+    String summaryLabel,
+    double bandwidthMbps,
+  })> advertisedTxStreamChipsForVlan(
+    int vlanId,
+    TrafficProtocol protocol, {
+    String? excludeEndpointId,
+  }) {
+    final switchesById = {for (final sw in _project.switches) sw.id: sw};
+    final endpointsById = {for (final ep in _project.endpoints) ep.id: ep};
+    final attachments = MulticastFlowTracer.buildEndpointAttachments(
+      switchesById: switchesById,
+      endpointsById: endpointsById,
+      links: _project.links,
+    );
+
+    final chips = <({
+      String sourceLabel,
+      String? sacnUniverseSpec,
+      String? multicastGroupSpec,
+      String summaryLabel,
+      double bandwidthMbps,
+    })>[];
+    final seen = <String>{};
+
+    for (final ep in _project.endpoints) {
+      if (ep.id == excludeEndpointId) continue;
+      for (final flow in ep.activeTrafficFlows) {
+        if (!flow.direction.isPublisher) continue;
+        if (flow.protocol != protocol) continue;
+        final att = attachments['${ep.id}:${flow.effectivePortNumber}'];
+        final effVlan = MulticastFlowTracer.effectiveVlanForFlow(flow, att);
+        if (effVlan != vlanId) continue;
+
+        final resolved = MulticastStreamResolver.resolveFlowStreams(
+          flow,
+          effectiveVlanId: effVlan,
+        );
+        if (resolved.isEmpty) continue;
+
+        String? sacnSpec;
+        String? mcastSpec;
+        String summary;
+        if (protocol == TrafficProtocol.sacn) {
+          final univs = [
+            for (final s in resolved)
+              if (s.sacnUniverse != null) s.sacnUniverse!,
+          ];
+          if (univs.isEmpty) continue;
+          sacnSpec = MulticastStreamResolver.formatUniverseRanges(univs);
+          summary = 'sACN U$sacnSpec (${ep.userLabel})';
+        } else {
+          final rawSpec = flow.multicastGroupSpec?.trim() ?? '';
+          if (rawSpec.isEmpty) continue;
+          mcastSpec = rawSpec;
+          summary = '$rawSpec (${ep.userLabel})';
+        }
+
+        final dedupKey = '${sacnSpec ?? ""}|${mcastSpec ?? ""}|${ep.id}';
+        if (!seen.add(dedupKey)) continue;
+        chips.add((
+          sourceLabel: ep.userLabel,
+          sacnUniverseSpec: sacnSpec,
+          multicastGroupSpec: mcastSpec,
+          summaryLabel: summary,
+          bandwidthMbps: flow.estimatedBandwidthMbps,
+        ));
+      }
+    }
+    return chips;
   }
 
   String serializeCurrentProject() =>

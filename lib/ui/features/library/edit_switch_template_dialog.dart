@@ -31,6 +31,8 @@ class _EditSwitchTemplateDialogState extends State<EditSwitchTemplateDialog> {
   late final TextEditingController _p25gCtrl;
   late final TextEditingController _p5gCtrl;
   late final TextEditingController _p10gCtrl;
+  late final TextEditingController _sfp1gCtrl;
+  late final TextEditingController _sfp10gCtrl;
   late final TextEditingController _poeWattsCtrl;
   late final TextEditingController _poeStartCtrl;
   late final TextEditingController _poeEndCtrl;
@@ -49,7 +51,9 @@ class _EditSwitchTemplateDialogState extends State<EditSwitchTemplateDialog> {
     _p1gCtrl = TextEditingController(text: '${e?.ports1G ?? 8}');
     _p25gCtrl = TextEditingController(text: '${e?.ports2_5G ?? 0}');
     _p5gCtrl = TextEditingController(text: '${e?.ports5G ?? 0}');
-    _p10gCtrl = TextEditingController(text: '${e?.ports10G ?? 2}');
+    _p10gCtrl = TextEditingController(text: '${e?.ports10G ?? 0}');
+    _sfp1gCtrl = TextEditingController(text: '${e?.sfpPorts1G ?? 2}');
+    _sfp10gCtrl = TextEditingController(text: '${e?.sfpPorts10G ?? 0}');
     _poeWattsCtrl = TextEditingController(text: '${e?.poeBudgetWatts ?? 120}');
     _poeStartCtrl = TextEditingController(
       text: e?.poeStartPort != null ? '${e!.poeStartPort}' : '',
@@ -71,6 +75,8 @@ class _EditSwitchTemplateDialogState extends State<EditSwitchTemplateDialog> {
     _p25gCtrl.dispose();
     _p5gCtrl.dispose();
     _p10gCtrl.dispose();
+    _sfp1gCtrl.dispose();
+    _sfp10gCtrl.dispose();
     _poeWattsCtrl.dispose();
     _poeStartCtrl.dispose();
     _poeEndCtrl.dispose();
@@ -89,7 +95,9 @@ class _EditSwitchTemplateDialogState extends State<EditSwitchTemplateDialog> {
     final p25g = parseInt(_p25gCtrl);
     final p5g = parseInt(_p5gCtrl);
     final p10g = parseInt(_p10gCtrl);
-    if (p100m + p1g + p25g + p5g + p10g == 0) return;
+    final sfp1g = parseInt(_sfp1gCtrl);
+    final sfp10g = parseInt(_sfp10gCtrl);
+    if (p100m + p1g + p25g + p5g + p10g + sfp1g + sfp10g == 0) return;
 
     final poeBudget = parseInt(_poeWattsCtrl, max: 5000);
     final poeStart = int.tryParse(_poeStartCtrl.text.trim());
@@ -105,6 +113,8 @@ class _EditSwitchTemplateDialogState extends State<EditSwitchTemplateDialog> {
         ports2_5G: p25g,
         ports5G: p5g,
         ports10G: p10g,
+        sfpPorts1G: sfp1g,
+        sfpPorts10G: sfp10g,
         poeBudgetWatts: poeBudget,
         poeStartPort: poeStart,
         poeEndPort: poeEnd,
@@ -144,7 +154,7 @@ class _EditSwitchTemplateDialogState extends State<EditSwitchTemplateDialog> {
               ),
               const SizedBox(height: 12),
               Text(
-                'Physical Port Tier Breakdown',
+                'RJ45 Copper Ports',
                 style: TextStyle(
                   fontSize: 11.5,
                   fontWeight: FontWeight.bold,
@@ -165,9 +175,27 @@ class _EditSwitchTemplateDialogState extends State<EditSwitchTemplateDialog> {
                   Expanded(child: _numField(_p10gCtrl, '10G')),
                 ],
               ),
+              const SizedBox(height: 10),
+              Text(
+                'SFP / Fibre Ports (No PoE)',
+                style: TextStyle(
+                  fontSize: 11.5,
+                  fontWeight: FontWeight.bold,
+                  color: AppTheme.textSecondary,
+                ),
+              ),
+              const SizedBox(height: 6),
+              Row(
+                children: [
+                  Expanded(child: _numField(_sfp1gCtrl, '1G SFP')),
+                  const SizedBox(width: 6),
+                  Expanded(child: _numField(_sfp10gCtrl, '10G SFP+')),
+                  const Expanded(flex: 3, child: SizedBox()),
+                ],
+              ),
               const SizedBox(height: 12),
               Text(
-                'PoE Capability',
+                'PoE Capability (RJ45 ports only)',
                 style: TextStyle(
                   fontSize: 11.5,
                   fontWeight: FontWeight.bold,

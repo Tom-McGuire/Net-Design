@@ -5,17 +5,23 @@ class SwitchPortConfig {
   SwitchPortConfig({
     required this.portNumber,
     this.customLabel,
-    this.maxSpeed = PortSpeed.speed1G,
-    this.poeCapable = false,
-    this.poeEnabled = false,
+    this.mediaType = PortMediaType.rj45,
+    PortSpeed maxSpeed = PortSpeed.speed1G,
+    bool poeCapable = false,
+    bool poeEnabled = false,
     this.portMode = SwitchPortMode.access,
     this.nativeVlan = 1,
     Set<int>? allowedVlans,
     this.lagGroupId,
-  }) : allowedVlans = allowedVlans ?? {1};
+  })  : maxSpeed = mediaType.normalizeSpeed(maxSpeed),
+        poeCapable = mediaType == PortMediaType.rj45 ? poeCapable : false,
+        poeEnabled =
+            mediaType == PortMediaType.rj45 && poeCapable ? poeEnabled : false,
+        allowedVlans = allowedVlans ?? {1};
 
   final int portNumber;
   final String? customLabel;
+  final PortMediaType mediaType;
   final PortSpeed maxSpeed;
   final bool poeCapable;
   final bool poeEnabled;
@@ -23,6 +29,15 @@ class SwitchPortConfig {
   final int nativeVlan;
   final Set<int> allowedVlans;
   final int? lagGroupId;
+
+  String get mediaSpeedLabel {
+    if (mediaType == PortMediaType.sfpFibre) {
+      return maxSpeed == PortSpeed.speed10G
+          ? '10G SFP+'
+          : '${maxSpeed.label} SFP';
+    }
+    return maxSpeed.label;
+  }
 
   String get displayName =>
       (customLabel != null && customLabel!.trim().isNotEmpty)
@@ -55,6 +70,7 @@ class SwitchPortConfig {
     int? portNumber,
     String? customLabel,
     bool clearCustomLabel = false,
+    PortMediaType? mediaType,
     PortSpeed? maxSpeed,
     bool? poeCapable,
     bool? poeEnabled,
@@ -67,6 +83,7 @@ class SwitchPortConfig {
     return SwitchPortConfig(
       portNumber: portNumber ?? this.portNumber,
       customLabel: clearCustomLabel ? null : (customLabel ?? this.customLabel),
+      mediaType: mediaType ?? this.mediaType,
       maxSpeed: maxSpeed ?? this.maxSpeed,
       poeCapable: poeCapable ?? this.poeCapable,
       poeEnabled: poeEnabled ?? this.poeEnabled,
@@ -81,6 +98,7 @@ class SwitchPortConfig {
     return {
       'portNumber': portNumber,
       if (customLabel != null) 'customLabel': customLabel,
+      'mediaType': mediaType.toJson(),
       'maxSpeed': maxSpeed.toJson(),
       'poeCapable': poeCapable,
       'poeEnabled': poeEnabled,
@@ -109,12 +127,14 @@ class SwitchPortConfig {
       parsedAllowed.add(nativeVlan);
     }
 
+    final mediaType = PortMediaType.fromJson(json['mediaType']);
     return SwitchPortConfig(
       portNumber: (json['portNumber'] is num)
           ? (json['portNumber'] as num).toInt().clamp(1, 512)
           : 1,
       customLabel:
           json['customLabel'] is String ? json['customLabel'] as String : null,
+      mediaType: mediaType,
       maxSpeed: PortSpeed.fromJson(json['maxSpeed']),
       poeCapable: json['poeCapable'] == true,
       poeEnabled: json['poeEnabled'] == true,

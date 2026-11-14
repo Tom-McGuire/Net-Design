@@ -3,6 +3,7 @@ import '../models/enums.dart';
 import '../models/network_link_edge.dart';
 import '../models/switch_node_instance.dart';
 import '../models/validation_issue.dart';
+import 'multicast_flow_tracer.dart';
 
 /// Pass 3: Per-VLAN IGMP Snooping, Active Querier & Flooded Traffic Solver.
 class IgmpDomainSolver {
@@ -17,30 +18,17 @@ class IgmpDomainSolver {
     final forwardingInterSwitchLinks = links.where((l) {
       return switchesById.containsKey(l.sourceNodeId) &&
           switchesById.containsKey(l.targetNodeId) &&
+          !l.hasMediaMismatch &&
           (l.stpState == LinkStpState.forwarding ||
               l.stpState == LinkStpState.loopUnprotected);
     }).toList();
 
-    // Map endpoints to switches + ingress VLANs + links.
-    final epSwitchAndVlan = <String, ({SwitchNodeInstance sw, int vlan})>{};
-    for (final link in links) {
-      final epA = endpointsById[link.sourceNodeId];
-      final epB = endpointsById[link.targetNodeId];
-      final swA = switchesById[link.sourceNodeId];
-      final swB = switchesById[link.targetNodeId];
-
-      if (epA != null && swB != null) {
-        final port = swB.portByNumber(link.targetPortNumber);
-        if (port != null) {
-          epSwitchAndVlan[epA.id] = (sw: swB, vlan: port.nativeVlan);
-        }
-      } else if (epB != null && swA != null) {
-        final port = swA.portByNumber(link.sourcePortNumber);
-        if (port != null) {
-          epSwitchAndVlan[epB.id] = (sw: swA, vlan: port.nativeVlan);
-        }
-      }
-    }
+    // Map (endpointId, epPortNumber) -> attached switch, port & link.
+    final epAttachments = MulticastFlowTracer.buildEndpointAttachments(
+      switchesById: switchesById,
+      endpointsById: endpointsById,
+      links: links,
+    );
 
     // Collect all VLAN IDs referenced anywhere in the topology.
     final allVlans = <int>{};
@@ -192,12 +180,11 @@ class IgmpDomainSolver {
         var broadcastMbps = 0.0;
         var multicastMbps = 0.0;
         for (final ep in endpointsById.values) {
-          final att = epSwitchAndVlan[ep.id];
-          if (att == null || !compIds.contains(att.sw.id)) continue;
-          final effectiveEpVlan = att.sw.supportsVlans ? att.vlan : null;
           for (final flow in ep.activeTrafficFlows) {
             if (!flow.direction.isPublisher) continue;
-            final flowVlan = effectiveEpVlan ?? flow.defaultVlanId;
+            final att = epAttachments['${ep.id}:${flow.effectivePortNumber}'];
+            if (att == null || !compIds.contains(att.sw.id)) continue;
+            final flowVlan = MulticastFlowTracer.effectiveVlanForFlow(flow, att);
             if (flowVlan != vlanId) continue;
 
             if (flow.deliveryType == DeliveryType.broadcast) {

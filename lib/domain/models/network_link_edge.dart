@@ -17,7 +17,14 @@ class NetworkLinkEdge {
     Set<int>? prunedVlans,
     this.hasVlanMismatch = false,
     this.hasSpeedStepDown = false,
+    this.isSfpStepDown = false,
+    this.hasMediaMismatch = false,
+    this.isValidTrunk = false,
     this.estimatedLoadMbps = 0.0,
+    this.streamTraceState = LinkStreamTraceState.none,
+    this.tracedStreamCount = 0,
+    this.tracedStreamMbps = 0.0,
+    this.streamDirectionSourceToTarget = true,
   })  : activeVlans = activeVlans ?? {},
         prunedVlans = prunedVlans ?? {};
 
@@ -39,7 +46,16 @@ class NetworkLinkEdge {
   Set<int> prunedVlans;
   bool hasVlanMismatch;
   bool hasSpeedStepDown;
+  bool isSfpStepDown;
+  bool hasMediaMismatch;
+  bool isValidTrunk;
   double estimatedLoadMbps;
+
+  // --- Computed Stream Trace Outputs ---
+  LinkStreamTraceState streamTraceState;
+  int tracedStreamCount;
+  double tracedStreamMbps;
+  bool streamDirectionSourceToTarget;
 
   double get utilizationPercent {
     if (negotiatedSpeed.mbps <= 0) return 0.0;
@@ -62,6 +78,13 @@ class NetworkLinkEdge {
   int portForNode(String nodeId) =>
       sourceNodeId == nodeId ? sourcePortNumber : targetPortNumber;
 
+  void resetStreamTraceState() {
+    streamTraceState = LinkStreamTraceState.none;
+    tracedStreamCount = 0;
+    tracedStreamMbps = 0.0;
+    streamDirectionSourceToTarget = true;
+  }
+
   void resetSimulationState() {
     stpState = LinkStpState.notApplicable;
     blockedAtNodeId = null;
@@ -71,7 +94,11 @@ class NetworkLinkEdge {
     prunedVlans.clear();
     hasVlanMismatch = false;
     hasSpeedStepDown = false;
+    isSfpStepDown = false;
+    hasMediaMismatch = false;
+    isValidTrunk = false;
     estimatedLoadMbps = 0.0;
+    resetStreamTraceState();
   }
 
   NetworkLinkEdge copyWith({
@@ -96,7 +123,14 @@ class NetworkLinkEdge {
       prunedVlans: Set<int>.from(prunedVlans),
       hasVlanMismatch: hasVlanMismatch,
       hasSpeedStepDown: hasSpeedStepDown,
+      isSfpStepDown: isSfpStepDown,
+      hasMediaMismatch: hasMediaMismatch,
+      isValidTrunk: isValidTrunk,
       estimatedLoadMbps: estimatedLoadMbps,
+      streamTraceState: streamTraceState,
+      tracedStreamCount: tracedStreamCount,
+      tracedStreamMbps: tracedStreamMbps,
+      streamDirectionSourceToTarget: streamDirectionSourceToTarget,
     );
   }
 

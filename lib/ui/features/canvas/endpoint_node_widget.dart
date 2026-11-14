@@ -3,6 +3,8 @@ import 'package:material_ui/material_ui.dart';
 import 'package:provider/provider.dart';
 
 import '../../../domain/models/endpoint_node_instance.dart';
+import '../../../domain/models/endpoint_template.dart';
+import '../../../domain/models/enums.dart';
 import '../../theme/app_theme.dart';
 import '../../widgets/rename_device_dialog.dart';
 import '../sandbox_view_model.dart';
@@ -35,24 +37,61 @@ class _EndpointNodeWidgetState extends State<EndpointNodeWidget> {
     final vm = context.watch<SandboxViewModel>();
     final isSelected = vm.selectedEndpointId == endpointNode.id;
     final highlightedVlan = vm.highlightedVlanId;
-    final isConnected = vm.isPortConnected(endpointNode.id, 1);
+    final isTrunkFilter = vm.isTrunkFilterActive;
+    final isStreamTrace = vm.isStreamTraceActive;
+    final effectivePorts = endpointNode.effectivePorts;
+
+    final freeAnyPort = effectivePorts
+        .where((p) => !vm.isPortConnected(endpointNode.id, p.portNumber))
+        .firstOrNull
+        ?.portNumber;
+    final compatibleFreePort = vm.pendingWireSource != null
+        ? vm.firstAvailablePortForNode(endpointNode.id)
+        : null;
+    final isFullyConnected = freeAnyPort == null;
     final isPendingSource = vm.pendingWireSource?.nodeId == endpointNode.id;
 
-    final matchesHighlightedVlan = highlightedVlan == null ||
-        endpointNode.activeTrafficFlows
-            .any((f) => f.defaultVlanId == highlightedVlan);
+    final matchesHighlightedVlan = !isTrunkFilter &&
+        (highlightedVlan == null ||
+            endpointNode.activeTrafficFlows
+                .any((f) => f.defaultVlanId == highlightedVlan));
+
+    final isTraceSource =
+        vm.activeStreamTraceTarget?.sourceEndpointId == endpointNode.id;
+    final hasDeliveredTrace = vm.project.links.any(
+      (l) =>
+          (l.sourceNodeId == endpointNode.id ||
+              l.targetNodeId == endpointNode.id) &&
+          l.streamTraceState == LinkStreamTraceState.delivered,
+    );
+    final hasFloodedTrace = vm.project.links.any(
+      (l) =>
+          (l.sourceNodeId == endpointNode.id ||
+              l.targetNodeId == endpointNode.id) &&
+          l.streamTraceState == LinkStreamTraceState.flooded,
+    );
+    final matchesStreamTrace =
+        !isStreamTrace || isTraceSource || hasDeliveredTrace || hasFloodedTrace;
+    final matchesFilter =
+        isStreamTrace ? matchesStreamTrace : matchesHighlightedVlan;
 
     final borderColor = isSelected
         ? AppTheme.accent
         : (isPendingSource
             ? AppTheme.warning
-            : (highlightedVlan != null && matchesHighlightedVlan
+            : (isStreamTrace && (isTraceSource || hasDeliveredTrace)
                 ? AppTheme.success
-                : AppTheme.border));
+                : (isStreamTrace && hasFloodedTrace
+                    ? AppTheme.warning
+                    : (highlightedVlan != null && matchesHighlightedVlan
+                        ? AppTheme.success
+                        : AppTheme.border))));
+
+    final totalPoe = endpointNode.totalPoeDrawWatts;
 
     return AnimatedOpacity(
       duration: const Duration(milliseconds: 160),
-      opacity: matchesHighlightedVlan ? 1.0 : 0.35,
+      opacity: matchesFilter ? 1.0 : 0.35,
       child: GestureDetector(
         dragStartBehavior: DragStartBehavior.down,
         supportedDevices: const {
@@ -62,8 +101,11 @@ class _EndpointNodeWidgetState extends State<EndpointNodeWidget> {
           PointerDeviceKind.invertedStylus,
         },
         onTap: () {
-          if (vm.pendingWireSource != null && !isConnected) {
-            vm.completeWiringToPort(endpointNode.id, 1);
+          if (vm.pendingWireSource != null && compatibleFreePort != null) {
+            vm.completeWiringToPort(endpointNode.id, compatibleFreePort);
+          } else if (vm.pendingWireSource != null && freeAnyPort != null) {
+            // Triggers descriptive media-mismatch feedback banner cleanly.
+            vm.completeWiringToPort(endpointNode.id, freeAnyPort);
           } else {
             vm.selectEndpoint(endpointNode.id);
           }
@@ -157,25 +199,30 @@ class _EndpointNodeWidgetState extends State<EndpointNodeWidget> {
                     const SizedBox(width: 4),
                     InkWell(
                       onTap: () {
-                        if (vm.pendingWireSource != null) {
-                          vm.completeWiringToPort(endpointNode.id, 1);
-                        } else {
-                          vm.startWiringFromPort(endpointNode.id, 1);
+                        if (vm.pendingWireSource != null && freeAnyPort != null) {
+                          vm.completeWiringToPort(
+                            endpointNode.id,
+                            compatibleFreePort ?? freeAnyPort,
+                          );
+                        } else if (freeAnyPort != null) {
+                          vm.startWiringFromPort(endpointNode.id, freeAnyPort);
                         }
                       },
                       child: Tooltip(
-                        message: isConnected
-                            ? 'NIC already connected'
+                        message: isFullyConnected
+                            ? 'All NIC ports connected'
                             : (vm.pendingWireSource != null
-                                ? 'Connect cable to this endpoint'
-                                : 'Wire cable from this endpoint'),
+                                ? 'Connect cable to free NIC'
+                                : 'Wire cable from NIC $freeAnyPort'),
                         child: Icon(
                           Icons.cable,
                           size: 14,
-                          color: isConnected
+                          color: isFullyConnected
                               ? AppTheme.textMuted
                               : (vm.pendingWireSource != null
-                                  ? AppTheme.success
+                                  ? (compatibleFreePort != null
+                                      ? AppTheme.success
+                                      : AppTheme.error)
                                   : AppTheme.accent),
                         ),
                       ),
@@ -191,31 +238,29 @@ class _EndpointNodeWidgetState extends State<EndpointNodeWidget> {
                     SizedBox(
                       width: double.infinity,
                       child: Wrap(
-                        spacing: 5,
+                        spacing: 4,
                         runSpacing: 4,
-                        alignment: WrapAlignment.spaceBetween,
                         crossAxisAlignment: WrapCrossAlignment.center,
                         children: [
-                          Container(
-                            padding: const EdgeInsets.symmetric(
-                              horizontal: 5,
-                              vertical: 2,
-                            ),
-                            decoration: BoxDecoration(
-                              color: AppTheme.accent.withValues(alpha: 0.14),
-                              borderRadius: BorderRadius.circular(4),
-                            ),
-                            child: Text(
-                              'NIC ${endpointNode.nicSpeed.label}',
-                              style: TextStyle(
-                                fontFamily: 'monospace',
-                                fontSize: 9.5,
-                                fontWeight: FontWeight.bold,
-                                color: AppTheme.accent,
+                          for (final port in effectivePorts)
+                            _EndpointNicBadge(
+                              port: port,
+                              multiPort: effectivePorts.length > 1,
+                              isConnected: vm.isPortConnected(
+                                endpointNode.id,
+                                port.portNumber,
                               ),
+                              isDimmedForWiring: vm.pendingWireSource != null &&
+                                  !vm.isPortConnected(
+                                    endpointNode.id,
+                                    port.portNumber,
+                                  ) &&
+                                  !vm.isPortMediaCompatibleWithPendingWire(
+                                    endpointNode.id,
+                                    port.portNumber,
+                                  ),
                             ),
-                          ),
-                          if (endpointNode.poeDrawWatts > 0)
+                          if (totalPoe > 0)
                             Container(
                               padding: const EdgeInsets.symmetric(
                                 horizontal: 5,
@@ -226,7 +271,7 @@ class _EndpointNodeWidgetState extends State<EndpointNodeWidget> {
                                 borderRadius: BorderRadius.circular(4),
                               ),
                               child: Text(
-                                '${endpointNode.poeDrawWatts.toStringAsFixed(1)}W PoE',
+                                '${totalPoe.toStringAsFixed(1)}W PoE',
                                 style: TextStyle(
                                   fontFamily: 'monospace',
                                   fontSize: 9.5,
@@ -300,5 +345,68 @@ class _EndpointNodeWidgetState extends State<EndpointNodeWidget> {
     if (newName != null) {
       vm.updateEndpoint(widget.endpointNode.copyWith(userLabel: newName));
     }
+  }
+}
+
+class _EndpointNicBadge extends StatelessWidget {
+  const _EndpointNicBadge({
+    required this.port,
+    required this.multiPort,
+    required this.isConnected,
+    required this.isDimmedForWiring,
+  });
+
+  final EndpointPortConfig port;
+  final bool multiPort;
+  final bool isConnected;
+  final bool isDimmedForWiring;
+
+  @override
+  Widget build(BuildContext context) {
+    final isSfp = port.mediaType == PortMediaType.sfpFibre;
+    final label = multiPort ? port.shortBadge : port.mediaSpeedLabel;
+
+    return Opacity(
+      opacity: isDimmedForWiring ? 0.25 : 1.0,
+      child: Tooltip(
+        message: '${port.displayName} (${port.mediaSpeedLabel})',
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 2),
+          decoration: BoxDecoration(
+            color: (isSfp ? AppTheme.accent : AppTheme.accent)
+                .withValues(alpha: isConnected ? 0.20 : 0.11),
+            borderRadius: BorderRadius.circular(isSfp ? 3 : 4),
+            border: Border.all(
+              color: isConnected
+                  ? AppTheme.accent.withValues(alpha: 0.75)
+                  : AppTheme.border,
+            ),
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Container(
+                width: 5,
+                height: 5,
+                decoration: BoxDecoration(
+                  color: isConnected ? AppTheme.success : AppTheme.textMuted,
+                  shape: BoxShape.circle,
+                ),
+              ),
+              const SizedBox(width: 4),
+              Text(
+                label,
+                style: TextStyle(
+                  fontFamily: 'monospace',
+                  fontSize: 9.5,
+                  fontWeight: FontWeight.bold,
+                  color: AppTheme.accent,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
   }
 }

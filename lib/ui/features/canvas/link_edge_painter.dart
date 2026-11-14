@@ -62,9 +62,12 @@ double estimateSwitchCardHeight(SwitchNodeInstance sw) {
 
 /// Estimates rendered endpoint card height from its badges and active traffic flows.
 double estimateEndpointCardHeight(EndpointNodeInstance ep) {
-  final hasManyBadges =
-      ep.poeDrawWatts > 0 && ep.ipAddress != null && ep.ipAddress!.isNotEmpty;
-  final badgeHeight = hasManyBadges ? 40.0 : 20.0;
+  final portCount = ep.effectivePorts.length;
+  final totalPoe = ep.totalPoeDrawWatts;
+  final extraBadges =
+      (totalPoe > 0 ? 1 : 0) + (ep.ipAddress?.isNotEmpty == true ? 1 : 0);
+  final badgeRows = ((portCount + extraBadges) / 2).ceil().clamp(1, 5);
+  final badgeHeight = badgeRows * 20.0 + math.max(0, badgeRows - 1) * 4.0;
 
   var flowsHeight = 0.0;
   if (ep.activeTrafficFlows.isNotEmpty) {
@@ -184,16 +187,23 @@ class LinkEdgePainter extends CustomPainter {
     required this.geometries,
     required this.selectedLinkId,
     required this.highlightedVlanId,
+    required this.isTrunkFilterActive,
+    this.isStreamTraceActive = false,
     required this.isDark,
   });
 
   final List<LinkGeometry> geometries;
   final String? selectedLinkId;
   final int? highlightedVlanId;
+  final bool isTrunkFilterActive;
+  final bool isStreamTraceActive;
   final bool isDark;
 
   @override
   void paint(Canvas canvas, Size size) {
+    final isFilterActive =
+        isTrunkFilterActive || highlightedVlanId != null || isStreamTraceActive;
+
     for (final geom in geometries) {
       final link = geom.link;
       final isSelected = link.id == selectedLinkId;
@@ -201,31 +211,56 @@ class LinkEdgePainter extends CustomPainter {
       final isBlocked = link.stpState == LinkStpState.blocking;
       final isUnprotectedLoop = link.stpState == LinkStpState.loopUnprotected;
       final isVlanHighlighted = highlightedVlanId != null &&
-          link.activeVlans.contains(highlightedVlanId);
+          link.activeVlans.contains(highlightedVlanId) &&
+          !link.hasVlanMismatch &&
+          !link.prunedVlans.contains(highlightedVlanId);
       final isVlanPruned = highlightedVlanId != null &&
           link.prunedVlans.contains(highlightedVlanId);
+      final traceState = link.streamTraceState;
+      final matchesActiveFilter = isStreamTraceActive
+          ? (traceState != LinkStreamTraceState.none)
+          : (isTrunkFilterActive ? link.isValidTrunk : isVlanHighlighted);
 
       Color lineColor;
       double strokeWidth = isSelected ? 3.4 : 2.3;
       bool dashed = false;
 
-      if (isUnprotectedLoop) {
+      if (isStreamTraceActive) {
+        switch (traceState) {
+          case LinkStreamTraceState.delivered:
+            lineColor = AppTheme.success;
+            strokeWidth = isSelected ? 3.8 : 3.2;
+          case LinkStreamTraceState.flooded:
+            lineColor = AppTheme.warning;
+            strokeWidth = isSelected ? 3.8 : 3.2;
+          case LinkStreamTraceState.igmpPruned:
+            lineColor = AppTheme.textMuted.withValues(alpha: 0.45);
+            strokeWidth = 1.6;
+            dashed = true;
+          case LinkStreamTraceState.none:
+            lineColor = AppTheme.textMuted.withValues(alpha: 0.16);
+            strokeWidth = 1.4;
+        }
+      } else if (isFilterActive) {
+        if (matchesActiveFilter) {
+          lineColor = AppTheme.success;
+          strokeWidth = isSelected ? 3.6 : 3.2;
+          dashed = isBlocked;
+        } else {
+          lineColor = AppTheme.textMuted.withValues(alpha: 0.22);
+          strokeWidth = 1.5;
+          dashed = false;
+        }
+      } else if (link.hasMediaMismatch) {
+        lineColor = AppTheme.error;
+        strokeWidth = 3.2;
+        dashed = true;
+      } else if (isUnprotectedLoop) {
         lineColor = AppTheme.error;
         strokeWidth = 3.2;
       } else if (isBlocked) {
         lineColor = AppTheme.error;
         dashed = true;
-      } else if (highlightedVlanId != null) {
-        if (isVlanPruned) {
-          lineColor = AppTheme.error;
-          strokeWidth = 3.0;
-        } else if (isVlanHighlighted) {
-          lineColor = AppTheme.success;
-          strokeWidth = 3.2;
-        } else {
-          lineColor = AppTheme.textMuted.withValues(alpha: 0.22);
-          strokeWidth = 1.5;
-        }
       } else if (link.hasVlanMismatch || link.utilizationPercent > 95.0) {
         lineColor = AppTheme.error;
       } else if (link.hasSpeedStepDown || link.utilizationPercent > 75.0) {
@@ -259,14 +294,38 @@ class LinkEdgePainter extends CustomPainter {
       canvas.drawCircle(geom.start, 3.5, terminalFill);
       canvas.drawCircle(geom.end, 3.5, terminalFill);
 
-      // Draw directional arrow away from Root Bridge on forwarding links.
-      if (link.stpState == LinkStpState.forwarding &&
-          (highlightedVlanId == null || isVlanHighlighted)) {
-        _drawDirectionArrow(canvas, geom, lineColor);
+      // Draw directional arrow along stream direction during trace, or STP direction otherwise.
+      if (isStreamTraceActive) {
+        if (traceState == LinkStreamTraceState.delivered ||
+            traceState == LinkStreamTraceState.flooded) {
+          _drawDirectionArrow(
+            canvas,
+            geom,
+            lineColor,
+            sourceToTarget: link.streamDirectionSourceToTarget,
+          );
+        }
+      } else if (link.stpState == LinkStpState.forwarding &&
+          (!isFilterActive || matchesActiveFilter)) {
+        _drawDirectionArrow(
+          canvas,
+          geom,
+          lineColor,
+          sourceToTarget: link.directionFromRootSourceToTarget,
+        );
       }
 
-      // Draw mid-link badge (BLK (STP), LOOP!, PRUNED, Speed/Load).
-      _drawLinkPill(canvas, geom, lineColor, isBlocked, isUnprotectedLoop, isVlanPruned);
+      // Draw mid-link badge (Trace status, MEDIA MISMATCH, BLK (STP), LOOP!, PRUNED, Speed/Load).
+      _drawLinkPill(
+        canvas,
+        geom,
+        lineColor,
+        isBlocked,
+        isUnprotectedLoop,
+        isVlanPruned,
+        isFilterActive,
+        matchesActiveFilter,
+      );
     }
   }
 
@@ -303,11 +362,16 @@ class LinkEdgePainter extends CustomPainter {
     }
   }
 
-  void _drawDirectionArrow(Canvas canvas, LinkGeometry geom, Color color) {
-    final t = geom.link.directionFromRootSourceToTarget ? 0.62 : 0.38;
+  void _drawDirectionArrow(
+    Canvas canvas,
+    LinkGeometry geom,
+    Color color, {
+    required bool sourceToTarget,
+  }) {
+    final t = sourceToTarget ? 0.62 : 0.38;
     final pos = geom.pointAt(t);
     var tangent = geom.tangentAt(t);
-    if (!geom.link.directionFromRootSourceToTarget) {
+    if (!sourceToTarget) {
       tangent = -tangent;
     }
     if (tangent.distance < 0.001) return;
@@ -341,31 +405,62 @@ class LinkEdgePainter extends CustomPainter {
     bool isBlocked,
     bool isUnprotectedLoop,
     bool isVlanPruned,
+    bool isFilterActive,
+    bool matchesActiveFilter,
   ) {
+    if (isFilterActive && !matchesActiveFilter) {
+      return; // Dimmed unrelated or misconfigured links stay uncluttered
+    }
+
     final link = geom.link;
 
-    // Position BLK pill closer to the blocked switch end.
     double t = 0.5;
     String label;
-    if (isUnprotectedLoop) {
+    Color textColor;
+
+    if (isStreamTraceActive) {
+      switch (link.streamTraceState) {
+        case LinkStreamTraceState.delivered:
+          label =
+              '${link.tracedStreamCount} str • ${link.tracedStreamMbps.toStringAsFixed(1)}M';
+          textColor = AppTheme.success;
+        case LinkStreamTraceState.flooded:
+          label = 'FLOODED ${link.tracedStreamMbps.toStringAsFixed(1)}M';
+          textColor = AppTheme.warning;
+        case LinkStreamTraceState.igmpPruned:
+          label = 'IGMP PRUNED';
+          textColor = AppTheme.textMuted;
+        case LinkStreamTraceState.none:
+          return;
+      }
+    } else if (link.hasMediaMismatch) {
+      label = 'MEDIA MISMATCH';
+      textColor = AppTheme.error;
+    } else if (isUnprotectedLoop) {
       label = 'LOOP!';
+      textColor = AppTheme.error;
     } else if (isBlocked) {
       t = (link.blockedAtNodeId == link.sourceNodeId) ? 0.28 : 0.72;
       label = 'BLK (STP) P${link.blockedAtPortNumber ?? ""}';
+      textColor = AppTheme.error;
     } else if (isVlanPruned) {
       label = 'VLAN $highlightedVlanId PRUNED';
+      textColor = AppTheme.error;
     } else if (link.hasVlanMismatch) {
       label = 'VLAN MISMATCH';
+      textColor = AppTheme.error;
     } else if (link.hasSpeedStepDown) {
-      label = '${link.negotiatedSpeed.label} STEP-DOWN';
-    } else if (highlightedVlanId != null &&
-        !link.activeVlans.contains(highlightedVlanId)) {
-      return; // Dimmed unrelated links stay uncluttered
+      label = link.isSfpStepDown
+          ? '1G SFP STEP-DOWN'
+          : '${link.negotiatedSpeed.label} STEP-DOWN';
+      textColor = AppTheme.warning;
     } else {
       final loadStr = link.estimatedLoadMbps >= 0.1
           ? ' • ${link.estimatedLoadMbps.toStringAsFixed(1)}M'
           : '';
-      label = 'P${link.sourcePortNumber}↔P${link.targetPortNumber} (${link.negotiatedSpeed.label}$loadStr)';
+      label =
+          'P${link.sourcePortNumber}↔P${link.targetPortNumber} (${link.negotiatedSpeed.label}$loadStr)';
+      textColor = AppTheme.textPrimary;
     }
 
     final center = geom.pointAt(t);
@@ -376,9 +471,7 @@ class LinkEdgePainter extends CustomPainter {
           fontFamily: 'monospace',
           fontSize: 9.5,
           fontWeight: FontWeight.bold,
-          color: (isBlocked || isUnprotectedLoop || isVlanPruned || link.hasVlanMismatch)
-              ? AppTheme.error
-              : (link.hasSpeedStepDown ? AppTheme.warning : AppTheme.textPrimary),
+          color: textColor,
         ),
       ),
       textDirection: TextDirection.ltr,
@@ -413,6 +506,8 @@ class LinkEdgePainter extends CustomPainter {
     return oldDelegate.isDark != isDark ||
         oldDelegate.selectedLinkId != selectedLinkId ||
         oldDelegate.highlightedVlanId != highlightedVlanId ||
+        oldDelegate.isTrunkFilterActive != isTrunkFilterActive ||
+        oldDelegate.isStreamTraceActive != isStreamTraceActive ||
         oldDelegate.geometries != geometries;
   }
 }

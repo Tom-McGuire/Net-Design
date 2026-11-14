@@ -2,10 +2,11 @@ import '../models/endpoint_node_instance.dart';
 import '../models/enums.dart';
 import '../models/network_link_edge.dart';
 import '../models/switch_node_instance.dart';
-import '../models/switch_port_config.dart';
 import '../models/validation_issue.dart';
+import 'multicast_flow_tracer.dart';
+import 'multicast_stream_resolver.dart';
 
-/// Pass 4: Link Bandwidth Utilization, Speed Step-Down & PoE Budget Solver.
+/// Pass 4: Link Bandwidth Utilization, Media Compatibility, Speed Step-Down & PoE Budget Solver.
 class ResourceBudgetSolver {
   const ResourceBudgetSolver();
 
@@ -15,9 +16,12 @@ class ResourceBudgetSolver {
     required List<NetworkLinkEdge> links,
     required List<ValidationIssue> issues,
   }) {
-    // Map endpoints to their connected switch, port, and link.
-    final epAttachment =
-        <String, ({SwitchNodeInstance sw, SwitchPortConfig port, NetworkLinkEdge link})>{};
+    // Map (endpointId, epPortNumber) -> attached switch, port & link.
+    final epAttachments = MulticastFlowTracer.buildEndpointAttachments(
+      switchesById: switchesById,
+      endpointsById: endpointsById,
+      links: links,
+    );
 
     for (final link in links) {
       link.estimatedLoadMbps = 0.0;
@@ -26,37 +30,33 @@ class ResourceBudgetSolver {
       final swA = switchesById[link.sourceNodeId];
       final swB = switchesById[link.targetNodeId];
 
-      if (epA != null && swB != null) {
-        final port = swB.portByNumber(link.targetPortNumber);
-        if (port != null) {
-          epAttachment[epA.id] = (sw: swB, port: port, link: link);
-        }
-      } else if (epB != null && swA != null) {
-        final port = swA.portByNumber(link.sourcePortNumber);
-        if (port != null) {
-          epAttachment[epB.id] = (sw: swA, port: port, link: link);
-        }
-      }
+      final nameA = swA?.userLabel ?? epA?.userLabel ?? link.sourceNodeId;
+      final nameB = swB?.userLabel ?? epB?.userLabel ?? link.targetNodeId;
+      final speedA = swA?.portByNumber(link.sourcePortNumber)?.maxSpeed ??
+          epA?.portByNumber(link.sourcePortNumber).effectiveSpeed ??
+          link.negotiatedSpeed;
+      final speedB = swB?.portByNumber(link.targetPortNumber)?.maxSpeed ??
+          epB?.portByNumber(link.targetPortNumber).effectiveSpeed ??
+          link.negotiatedSpeed;
+      final mediaA = swA?.portByNumber(link.sourcePortNumber)?.mediaType ??
+          epA?.portByNumber(link.sourcePortNumber).mediaType ??
+          PortMediaType.rj45;
+      final mediaB = swB?.portByNumber(link.targetPortNumber)?.mediaType ??
+          epB?.portByNumber(link.targetPortNumber).mediaType ??
+          PortMediaType.rj45;
 
-      // Report speed step-downs (e.g. 10G port connected to 1G or 100M port).
-      if (link.hasSpeedStepDown) {
-        final nameA = swA?.userLabel ?? epA?.userLabel ?? link.sourceNodeId;
-        final nameB = swB?.userLabel ?? epB?.userLabel ?? link.targetNodeId;
-        final speedA = swA?.portByNumber(link.sourcePortNumber)?.maxSpeed ??
-            epA?.nicSpeed ??
-            link.negotiatedSpeed;
-        final speedB = swB?.portByNumber(link.targetPortNumber)?.maxSpeed ??
-            epB?.nicSpeed ??
-            link.negotiatedSpeed;
-
+      // Flag physical media mismatches (RJ45 <-> SFP/Fibre) as Critical.
+      if (link.hasMediaMismatch) {
         issues.add(
           ValidationIssue(
-            id: 'bw-stepdown-${link.id}',
-            severity: IssueSeverity.info,
+            id: 'media-mismatch-${link.id}',
+            severity: IssueSeverity.critical,
             category: IssueCategory.bandwidth,
-            title: 'Link Speed Stepped Down',
+            title: 'Incompatible Physical Media ($nameA <-> $nameB)',
             message:
-                '$nameA (${speedA.label}) <-> $nameB (${speedB.label}) negotiated at ${link.negotiatedSpeed.label}.',
+                '$nameA Port ${link.sourcePortNumber} (${mediaA.label}) cannot connect directly to $nameB Port ${link.targetPortNumber} (${mediaB.label}).',
+            recommendation:
+                'Connect RJ45 to RJ45 and SFP/Fibre to SFP/Fibre.',
             nodeId: swA?.id ?? swB?.id,
             portNumber: swA != null
                 ? link.sourcePortNumber
@@ -64,65 +64,174 @@ class ResourceBudgetSolver {
             linkId: link.id,
           ),
         );
+        continue;
+      }
+
+      // Report speed step-downs: 1G SFP <-> 10G SFP+ is a Warning; RJ45 step-downs remain Info.
+      if (link.hasSpeedStepDown) {
+        if (link.isSfpStepDown) {
+          issues.add(
+            ValidationIssue(
+              id: 'bw-stepdown-${link.id}',
+              severity: IssueSeverity.warning,
+              category: IssueCategory.bandwidth,
+              title: 'SFP / SFP+ Speed Step-Down',
+              message:
+                  '10G SFP+ connected to 1G SFP between $nameA (${speedA.label}) and $nameB (${speedB.label}) — verify transceiver compatibility / speed step-down (negotiated at ${link.negotiatedSpeed.label}).',
+              recommendation:
+                  'Use matching 1G SFP or 10G SFP+ transceivers at both ends if full 10G throughput is needed.',
+              nodeId: swA?.id ?? swB?.id,
+              portNumber: swA != null
+                  ? link.sourcePortNumber
+                  : (swB != null ? link.targetPortNumber : null),
+              linkId: link.id,
+            ),
+          );
+        } else {
+          issues.add(
+            ValidationIssue(
+              id: 'bw-stepdown-${link.id}',
+              severity: IssueSeverity.info,
+              category: IssueCategory.bandwidth,
+              title: 'Link Speed Stepped Down',
+              message:
+                  '$nameA (${speedA.label}) <-> $nameB (${speedB.label}) negotiated at ${link.negotiatedSpeed.label}.',
+              nodeId: swA?.id ?? swB?.id,
+              portNumber: swA != null
+                  ? link.sourcePortNumber
+                  : (swB != null ? link.targetPortNumber : null),
+              linkId: link.id,
+            ),
+          );
+        }
       }
     }
 
     final forwardingInterSwitchLinks = links.where((l) {
       return switchesById.containsKey(l.sourceNodeId) &&
           switchesById.containsKey(l.targetNodeId) &&
+          !l.hasMediaMismatch &&
           (l.stpState == LinkStpState.forwarding ||
               l.stpState == LinkStpState.loopUnprotected);
     }).toList();
 
-    // 4.1 Accumulate bandwidth across access links & inter-switch forwarding tree.
+    // 4.1 Accumulate bandwidth across bound NIC access links & inter-switch forwarding tree.
     for (final ep in endpointsById.values) {
-      final att = epAttachment[ep.id];
-      if (att == null) continue;
-
       for (final flow in ep.activeTrafficFlows) {
+        final att = epAttachments['${ep.id}:${flow.effectivePortNumber}'];
+        if (att == null) continue;
+
         att.link.estimatedLoadMbps += flow.estimatedBandwidthMbps;
 
         if (!flow.direction.isPublisher) continue;
-        final vlanId =
-            att.sw.supportsVlans ? att.port.nativeVlan : flow.defaultVlanId;
+        final vlanId = MulticastFlowTracer.effectiveVlanForFlow(flow, att);
 
         final vlanForwardLinks = forwardingInterSwitchLinks
             .where((l) => l.activeVlans.contains(vlanId))
             .toList();
 
-        // Check whether traffic floods across the VLAN subgraph
-        // (broadcast or un-snooped multicast).
-        final isBroadcast = flow.deliveryType == DeliveryType.broadcast;
-        final isUnsnoopedMulticast =
-            flow.deliveryType == DeliveryType.multicast &&
-                !(att.sw.supportsIgmpSnooping &&
-                    (att.sw.vlanConfigs[vlanId]?.igmpSnoopingEnabled ?? false));
+        final reachableVlanLinks = _collectReachableVlanLinks(
+          startSwitchId: att.sw.id,
+          vlanLinks: vlanForwardLinks,
+        );
 
-        if (isBroadcast || isUnsnoopedMulticast) {
-          // Floods across every reachable forwarding link carrying vlanId.
-          final floodedLinks = _collectReachableVlanLinks(
-            startSwitchId: att.sw.id,
-            vlanLinks: vlanForwardLinks,
-          );
-          for (final l in floodedLinks) {
+        // Identify reachable switches & whether an Active Querier exists on vlanId.
+        final compSwitchIds = <String>{att.sw.id};
+        for (final l in reachableVlanLinks) {
+          compSwitchIds.add(l.sourceNodeId);
+          compSwitchIds.add(l.targetNodeId);
+        }
+        String? activeQuerierSwId;
+        for (final swId in compSwitchIds) {
+          final sw = switchesById[swId];
+          if (sw != null && sw.activeQuerierVlans.contains(vlanId)) {
+            activeQuerierSwId = sw.id;
+            break;
+          }
+        }
+
+        final snoopingOnTxSwitch = att.sw.supportsIgmpSnooping &&
+            (att.sw.vlanConfigs[vlanId]?.igmpSnoopingEnabled ?? false);
+
+        // Broadcast or un-snooped/querierless multicast floods the reachable VLAN subgraph.
+        final isBroadcast = flow.deliveryType == DeliveryType.broadcast;
+        final isFloodedMulticast = flow.deliveryType == DeliveryType.multicast &&
+            (!snoopingOnTxSwitch ||
+                (activeQuerierSwId == null &&
+                    compSwitchIds.length > 1));
+
+        if (isBroadcast || isFloodedMulticast) {
+          for (final l in reachableVlanLinks) {
             l.estimatedLoadMbps += flow.estimatedBandwidthMbps;
           }
+          continue;
+        }
+
+        // Stream-level multicast pruning when resolved streams exist (e.g., sACN universes)
+        final txStreams = MulticastStreamResolver.resolveFlowStreams(
+          flow,
+          effectiveVlanId: vlanId,
+        );
+        if (flow.deliveryType == DeliveryType.multicast && txStreams.isNotEmpty) {
+          for (final stream in txStreams) {
+            final targetSwitches = <String>{};
+            if (activeQuerierSwId != null && activeQuerierSwId != att.sw.id) {
+              targetSwitches.add(activeQuerierSwId);
+            }
+            for (final otherEp in endpointsById.values) {
+              if (otherEp.id == ep.id) continue;
+              for (final otherFlow in otherEp.activeTrafficFlows) {
+                if (!otherFlow.direction.isSubscriber ||
+                    otherFlow.protocol != flow.protocol) {
+                  continue;
+                }
+                final otherAtt =
+                    epAttachments['${otherEp.id}:${otherFlow.effectivePortNumber}'];
+                if (otherAtt == null || otherAtt.sw.id == att.sw.id) continue;
+                final otherVlan =
+                    MulticastFlowTracer.effectiveVlanForFlow(otherFlow, otherAtt);
+                if (otherVlan != vlanId) continue;
+
+                final otherStreams = MulticastStreamResolver.resolveFlowStreams(
+                  otherFlow,
+                  effectiveVlanId: otherVlan,
+                );
+                final matchesStream = otherStreams.isEmpty ||
+                    otherStreams
+                        .any((os) => os.multicastIp == stream.multicastIp);
+                if (matchesStream) {
+                  targetSwitches.add(otherAtt.sw.id);
+                }
+              }
+            }
+
+            if (targetSwitches.isNotEmpty) {
+              final traversedLinks = _collectShortestPathUnion(
+                startSwitchId: att.sw.id,
+                targetSwitchIds: targetSwitches,
+                vlanLinks: vlanForwardLinks,
+              );
+              for (final l in traversedLinks) {
+                l.estimatedLoadMbps += stream.bandwidthMbps;
+              }
+            }
+          }
         } else {
-          // Directed/snooped flow: trace path union to matching reachable subscribers.
+          // Directed unicast or aggregate multicast flow without stream specs
           final targetSwitches = <String>{};
           for (final otherEp in endpointsById.values) {
             if (otherEp.id == ep.id) continue;
-            final otherAtt = epAttachment[otherEp.id];
-            if (otherAtt == null || otherAtt.sw.id == att.sw.id) continue;
-            final otherVlan = otherAtt.sw.supportsVlans
-                ? otherAtt.port.nativeVlan
-                : vlanId;
-            if (otherVlan != vlanId) continue;
-
-            final subscribes = otherEp.activeTrafficFlows.any(
-              (f) => f.direction.isSubscriber && f.protocol == flow.protocol,
-            );
-            if (subscribes) {
+            for (final otherFlow in otherEp.activeTrafficFlows) {
+              if (!otherFlow.direction.isSubscriber ||
+                  otherFlow.protocol != flow.protocol) {
+                continue;
+              }
+              final otherAtt =
+                  epAttachments['${otherEp.id}:${otherFlow.effectivePortNumber}'];
+              if (otherAtt == null || otherAtt.sw.id == att.sw.id) continue;
+              final otherVlan =
+                  MulticastFlowTracer.effectiveVlanForFlow(otherFlow, otherAtt);
+              if (otherVlan != vlanId) continue;
               targetSwitches.add(otherAtt.sw.id);
             }
           }
@@ -143,6 +252,7 @@ class ResourceBudgetSolver {
 
     // Check link utilization thresholds (> 75% Warning, > 95% Critical).
     for (final link in links) {
+      if (link.hasMediaMismatch) continue;
       final util = link.utilizationPercent;
       if (util <= 75.0) continue;
 
@@ -171,33 +281,40 @@ class ResourceBudgetSolver {
       );
     }
 
-    // 4.2 PoE port capability & switch budget aggregation.
+    // 4.2 PoE port capability & switch budget aggregation (strictly RJ45 ports).
     for (final ep in endpointsById.values) {
-      if (ep.poeDrawWatts <= 0) continue;
-      final att = epAttachment[ep.id];
-      if (att == null) continue;
+      for (final epPort in ep.effectivePorts) {
+        final drawWatts = epPort.effectivePoeDrawWatts;
+        if (drawWatts <= 0) continue;
+        final att = epAttachments['${ep.id}:${epPort.portNumber}'];
+        if (att == null) continue;
 
-      final suppliesPoe = att.sw.poeBudgetWatts > 0 &&
-          att.port.poeCapable &&
-          att.port.poeEnabled;
-      if (!suppliesPoe) {
-        issues.add(
-          ValidationIssue(
-            id: 'poe-port-incapable-${ep.id}',
-            severity: IssueSeverity.critical,
-            category: IssueCategory.poe,
-            title: 'PoE Power Missing on Port',
-            message:
-                '${ep.userLabel} requires ${ep.poeDrawWatts.toStringAsFixed(1)}W PoE, but ${att.sw.userLabel}: Port ${att.port.portNumber} does not supply PoE.',
-            recommendation:
-                'Move ${ep.userLabel} to a PoE-enabled port, enable PoE on Port ${att.port.portNumber}, or use a local power supply / PoE injector.',
-            nodeId: att.sw.id,
-            portNumber: att.port.portNumber,
-            linkId: att.link.id,
-          ),
-        );
-      } else {
-        att.sw.totalPoeDrawWatts += ep.poeDrawWatts;
+        final suppliesPoe = att.port.mediaType == PortMediaType.rj45 &&
+            att.sw.poeBudgetWatts > 0 &&
+            att.port.poeCapable &&
+            att.port.poeEnabled;
+        if (!suppliesPoe) {
+          final issueId = epPort.portNumber == 1
+              ? 'poe-port-incapable-${ep.id}'
+              : 'poe-port-incapable-${ep.id}-p${epPort.portNumber}';
+          issues.add(
+            ValidationIssue(
+              id: issueId,
+              severity: IssueSeverity.critical,
+              category: IssueCategory.poe,
+              title: 'PoE Power Missing on Port',
+              message:
+                  '${ep.userLabel} (${epPort.displayName}) requires ${drawWatts.toStringAsFixed(1)}W PoE, but ${att.sw.userLabel}: Port ${att.port.portNumber} does not supply PoE.',
+              recommendation:
+                  'Move ${ep.userLabel} to a PoE-enabled RJ45 port, enable PoE on Port ${att.port.portNumber}, or use a local power supply / PoE injector.',
+              nodeId: att.sw.id,
+              portNumber: att.port.portNumber,
+              linkId: att.link.id,
+            ),
+          );
+        } else {
+          att.sw.totalPoeDrawWatts += drawWatts;
+        }
       }
     }
 

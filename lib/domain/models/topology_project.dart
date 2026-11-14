@@ -17,9 +17,6 @@ class TopologyProject {
         knownVlans = knownVlans ??
             {
               1: 'Default / Mgmt',
-              20: 'sACN / Lighting',
-              30: 'Dante / Audio',
-              40: 'NDI / Video',
             };
 
   final String name;
@@ -48,12 +45,33 @@ class TopologyProject {
   }
 
   Map<String, dynamic> toJson() {
+    final allVlans = <int, String>{
+      1: 'Default / Mgmt',
+      ...knownVlans,
+    };
+    for (final sw in switches) {
+      for (final entry in sw.vlanConfigs.entries) {
+        allVlans.putIfAbsent(entry.key, () => entry.value.vlanName);
+      }
+      for (final p in sw.ports) {
+        allVlans.putIfAbsent(p.nativeVlan, () => 'VLAN ${p.nativeVlan}');
+        for (final v in p.allowedVlans) {
+          allVlans.putIfAbsent(v, () => 'VLAN $v');
+        }
+      }
+    }
+    for (final ep in endpoints) {
+      for (final f in ep.activeTrafficFlows) {
+        allVlans.putIfAbsent(f.defaultVlanId, () => 'VLAN ${f.defaultVlanId}');
+      }
+    }
+
     return {
       'schemaVersion': 1,
       'name': name,
       'description': description,
       'knownVlans': {
-        for (final entry in knownVlans.entries)
+        for (final entry in allVlans.entries)
           entry.key.toString(): entry.value,
       },
       'switches': switches.map((s) => s.toJson()).toList(),

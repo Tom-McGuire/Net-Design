@@ -83,6 +83,12 @@ class _PortVlanMatrixEditorState extends State<PortVlanMatrixEditor> {
                   port: port,
                   switchNode: sw,
                   isSelected: selectedPort?.portNumber == port.portNumber,
+                  isDimmedForWiring: vm.pendingWireSource != null &&
+                      !vm.isPortConnected(sw.id, port.portNumber) &&
+                      !vm.isPortMediaCompatibleWithPendingWire(
+                        sw.id,
+                        port.portNumber,
+                      ),
                   link: _findPortLink(vm.project.links, sw.id, port.portNumber),
                   onTap: () =>
                       vm.selectSwitch(sw.id, portNumber: port.portNumber),
@@ -132,12 +138,38 @@ class _PortVlanMatrixEditorState extends State<PortVlanMatrixEditor> {
           Row(
             children: [
               Text(
-                'Port ${port.portNumber} (${port.maxSpeed.label})',
+                'Port ${port.portNumber} (${port.mediaSpeedLabel})',
                 style: TextStyle(
                   fontFamily: 'monospace',
                   fontSize: 12,
                   fontWeight: FontWeight.bold,
                   color: AppTheme.textPrimary,
+                ),
+              ),
+              const SizedBox(width: 6),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 2),
+                decoration: BoxDecoration(
+                  color: port.mediaType == PortMediaType.sfpFibre
+                      ? AppTheme.accent.withValues(alpha: 0.14)
+                      : AppTheme.surface,
+                  borderRadius: BorderRadius.circular(4),
+                  border: Border.all(
+                    color: port.mediaType == PortMediaType.sfpFibre
+                        ? AppTheme.accent.withValues(alpha: 0.5)
+                        : AppTheme.border,
+                  ),
+                ),
+                child: Text(
+                  port.mediaType.shortLabel,
+                  style: TextStyle(
+                    fontFamily: 'monospace',
+                    fontSize: 9.5,
+                    fontWeight: FontWeight.bold,
+                    color: port.mediaType == PortMediaType.sfpFibre
+                        ? AppTheme.accent
+                        : AppTheme.textSecondary,
+                  ),
                 ),
               ),
               const Spacer(),
@@ -193,6 +225,43 @@ class _PortVlanMatrixEditorState extends State<PortVlanMatrixEditor> {
           ),
           const SizedBox(height: 8),
 
+          // Port Speed (restricted by physical media type)
+          DropdownButtonFormField<PortSpeed>(
+            key: ValueKey(
+              'port-spd-${sw.id}-${port.portNumber}-${port.maxSpeed.name}',
+            ),
+            initialValue: port.maxSpeed,
+            isExpanded: true,
+            decoration: InputDecoration(
+              labelText: port.mediaType == PortMediaType.sfpFibre
+                  ? 'SFP Transceiver Speed'
+                  : 'Copper Port Speed',
+            ),
+            dropdownColor: AppTheme.surfaceElevated,
+            style: TextStyle(
+              fontFamily: 'monospace',
+              fontSize: 12,
+              color: AppTheme.textPrimary,
+            ),
+            items: port.mediaType.allowedSpeeds
+                .map(
+                  (s) => DropdownMenuItem(
+                    value: s,
+                    child: Text(
+                      port.mediaType == PortMediaType.sfpFibre
+                          ? (s == PortSpeed.speed10G ? '10G SFP+' : '1G SFP')
+                          : '${s.label} RJ45',
+                    ),
+                  ),
+                )
+                .toList(),
+            onChanged: (spd) {
+              if (spd == null) return;
+              vm.updatePort(sw.id, port.copyWith(maxSpeed: spd));
+            },
+          ),
+          const SizedBox(height: 8),
+
           // Port Mode (Access vs Trunk) & Native VLAN
           if (sw.supportsVlans) ...[
             Row(
@@ -200,6 +269,7 @@ class _PortVlanMatrixEditorState extends State<PortVlanMatrixEditor> {
                 Expanded(
                   child: DropdownButtonFormField<SwitchPortMode>(
                     initialValue: port.portMode,
+                    isExpanded: true,
                     decoration: const InputDecoration(labelText: 'Port Mode'),
                     dropdownColor: AppTheme.surfaceElevated,
                     style: TextStyle(fontSize: 12, color: AppTheme.textPrimary),
@@ -232,6 +302,7 @@ class _PortVlanMatrixEditorState extends State<PortVlanMatrixEditor> {
                     initialValue: availableVlans.contains(port.nativeVlan)
                         ? port.nativeVlan
                         : availableVlans.first,
+                    isExpanded: true,
                     decoration: InputDecoration(
                       labelText: port.portMode == SwitchPortMode.access
                           ? 'Access VLAN'
@@ -316,22 +387,34 @@ class _PortVlanMatrixEditorState extends State<PortVlanMatrixEditor> {
               style: TextStyle(fontSize: 11, color: AppTheme.warning),
             ),
 
-          // PoE Capability toggle
-          if (sw.poeBudgetWatts > 0) ...[
+          // PoE Capability toggle (RJ45 ports only)
+          if (sw.poeBudgetWatts > 0 &&
+              port.mediaType == PortMediaType.rj45) ...[
             const SizedBox(height: 6),
-            SwitchListTile(
-              contentPadding: EdgeInsets.zero,
-              dense: true,
-              title: Text(
-                port.poeCapable
-                    ? 'PoE Power Supply Enabled'
-                    : 'Port Not PoE Capable (Uplink)',
-                style: TextStyle(fontSize: 11.5, color: AppTheme.textPrimary),
+            Material(
+              type: MaterialType.transparency,
+              child: SwitchListTile(
+                contentPadding: EdgeInsets.zero,
+                dense: true,
+                title: Text(
+                  port.poeCapable
+                      ? 'PoE Power Supply Enabled'
+                      : 'Port Not PoE Capable (Uplink)',
+                  style: TextStyle(fontSize: 11.5, color: AppTheme.textPrimary),
+                ),
+                value: port.poeCapable && port.poeEnabled,
+                onChanged: port.poeCapable
+                    ? (val) =>
+                        vm.updatePort(sw.id, port.copyWith(poeEnabled: val))
+                    : null,
               ),
-              value: port.poeCapable && port.poeEnabled,
-              onChanged: port.poeCapable
-                  ? (val) => vm.updatePort(sw.id, port.copyWith(poeEnabled: val))
-                  : null,
+            ),
+          ] else if (sw.poeBudgetWatts > 0 &&
+              port.mediaType == PortMediaType.sfpFibre) ...[
+            const SizedBox(height: 6),
+            Text(
+              'SFP / Fibre port — PoE is supported on RJ45 copper ports only.',
+              style: TextStyle(fontSize: 10.5, color: AppTheme.textMuted),
             ),
           ],
         ],
@@ -345,6 +428,7 @@ class _FaceplatePortTile extends StatelessWidget {
     required this.port,
     required this.switchNode,
     required this.isSelected,
+    this.isDimmedForWiring = false,
     required this.link,
     required this.onTap,
   });
@@ -352,6 +436,7 @@ class _FaceplatePortTile extends StatelessWidget {
   final SwitchPortConfig port;
   final SwitchNodeInstance switchNode;
   final bool isSelected;
+  final bool isDimmedForWiring;
   final NetworkLinkEdge? link;
   final VoidCallback onTap;
 
@@ -362,10 +447,17 @@ class _FaceplatePortTile extends StatelessWidget {
         link!.blockedAtNodeId == switchNode.id &&
         link!.blockedAtPortNumber == port.portNumber;
     final isConnected = link != null;
+    final isSfp = port.mediaType == PortMediaType.sfpFibre;
 
-    Color borderColor = AppTheme.border;
-    Color bgColor = AppTheme.surface;
-    if (isBlocked) {
+    Color borderColor =
+        isSfp ? AppTheme.accent.withValues(alpha: 0.45) : AppTheme.border;
+    Color bgColor = isSfp
+        ? AppTheme.accent.withValues(alpha: 0.06)
+        : AppTheme.surface;
+    if (link != null && link!.hasMediaMismatch) {
+      borderColor = AppTheme.error;
+      bgColor = AppTheme.error.withValues(alpha: 0.16);
+    } else if (isBlocked) {
       borderColor = AppTheme.error;
       bgColor = AppTheme.error.withValues(alpha: 0.14);
     } else if (isConnected) {
@@ -376,63 +468,83 @@ class _FaceplatePortTile extends StatelessWidget {
       borderColor = AppTheme.accent;
     }
 
-    return InkWell(
-      onTap: onTap,
-      borderRadius: BorderRadius.circular(4),
-      child: Container(
-        width: 56,
-        padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 4),
-        decoration: BoxDecoration(
-          color: bgColor,
-          borderRadius: BorderRadius.circular(4),
-          border: Border.all(color: borderColor, width: isSelected ? 1.8 : 1.0),
-        ),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-              children: [
-                Text(
-                  'P${port.portNumber}',
-                  style: TextStyle(
-                    fontFamily: 'monospace',
-                    fontSize: 10,
-                    fontWeight: FontWeight.bold,
-                    color: AppTheme.textPrimary,
+    return Opacity(
+      opacity: isDimmedForWiring ? 0.25 : 1.0,
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(4),
+        child: Container(
+          width: 64,
+          padding: const EdgeInsets.symmetric(horizontal: 3, vertical: 4),
+          decoration: BoxDecoration(
+            color: bgColor,
+            borderRadius: BorderRadius.circular(isSfp ? 3 : 4),
+            border:
+                Border.all(color: borderColor, width: isSelected ? 1.8 : 1.0),
+          ),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  Flexible(
+                    child: Text(
+                      'P${port.portNumber}',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        fontFamily: 'monospace',
+                        fontSize: 9.5,
+                        fontWeight: FontWeight.bold,
+                        color: AppTheme.textPrimary,
+                      ),
+                    ),
                   ),
+                  if (isSfp)
+                    Text(
+                      'SFP',
+                      style: TextStyle(
+                        fontFamily: 'monospace',
+                        fontSize: 7.0,
+                        fontWeight: FontWeight.w800,
+                        color: AppTheme.accent,
+                      ),
+                    )
+                  else if (port.poeCapable && port.poeEnabled)
+                    Icon(Icons.bolt, size: 10, color: AppTheme.warning),
+                ],
+              ),
+              const SizedBox(height: 1),
+              Text(
+                port.mediaSpeedLabel,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                  fontFamily: 'monospace',
+                  fontSize: 8,
+                  color: isSfp ? AppTheme.accent : AppTheme.textSecondary,
                 ),
-                if (port.poeCapable && port.poeEnabled)
-                  Icon(Icons.bolt, size: 10, color: AppTheme.warning),
-              ],
-            ),
-            const SizedBox(height: 1),
-            Text(
-              port.maxSpeed.label,
-              style: TextStyle(
-                fontFamily: 'monospace',
-                fontSize: 8.5,
-                color: AppTheme.textSecondary,
               ),
-            ),
-            Text(
-              isBlocked
-                  ? 'BLK'
-                  : (port.portMode == SwitchPortMode.trunk
-                      ? 'TRK'
-                      : 'V${port.nativeVlan}'),
-              style: TextStyle(
-                fontFamily: 'monospace',
-                fontSize: 8.5,
-                fontWeight: FontWeight.bold,
-                color: isBlocked
-                    ? AppTheme.error
+              Text(
+                isBlocked
+                    ? 'BLK'
                     : (port.portMode == SwitchPortMode.trunk
-                        ? AppTheme.accent
-                        : AppTheme.textMuted),
+                        ? 'TRK'
+                        : 'V${port.nativeVlan}'),
+                style: TextStyle(
+                  fontFamily: 'monospace',
+                  fontSize: 8.5,
+                  fontWeight: FontWeight.bold,
+                  color: isBlocked
+                      ? AppTheme.error
+                      : (port.portMode == SwitchPortMode.trunk
+                          ? AppTheme.accent
+                          : AppTheme.textMuted),
+                ),
               ),
-            ),
-          ],
+            ],
+          ),
         ),
       ),
     );

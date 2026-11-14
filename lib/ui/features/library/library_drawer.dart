@@ -334,7 +334,7 @@ class LibraryDrawer extends StatelessWidget {
                             ),
                           ),
                           Text(
-                            'NIC ${tpl.nicSpeed.label} • ${tpl.poeDrawWatts.toStringAsFixed(1)}W PoE'
+                            '${tpl.portsSummaryString} • ${tpl.totalPoeDrawWatts.toStringAsFixed(1)}W PoE'
                             '${flowsText.isNotEmpty ? " • $flowsText" : ""}',
                             style: TextStyle(
                               fontFamily: 'monospace',

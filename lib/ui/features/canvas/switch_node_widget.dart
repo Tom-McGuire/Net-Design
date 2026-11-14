@@ -36,14 +36,31 @@ class _SwitchNodeWidgetState extends State<SwitchNodeWidget> {
     final vm = context.watch<SandboxViewModel>();
     final isSelected = vm.selectedSwitchId == switchNode.id;
     final highlightedVlan = vm.highlightedVlanId;
+    final isTrunkFilter = vm.isTrunkFilterActive;
+    final isStreamTrace = vm.isStreamTraceActive;
+    final isFilterActive =
+        isTrunkFilter || highlightedVlan != null || isStreamTrace;
 
-    final carriesHighlightedVlan = highlightedVlan == null ||
-        switchNode.ports.any(
-          (p) => p.permitsVlan(
-            highlightedVlan,
-            switchSupportsVlans: switchNode.supportsVlans,
-          ),
-        );
+    final carriesHighlightedFilter = !isFilterActive ||
+        (isStreamTrace
+            ? vm.project.links.any(
+                (l) =>
+                    (l.sourceNodeId == switchNode.id ||
+                        l.targetNodeId == switchNode.id) &&
+                    (l.streamTraceState == LinkStreamTraceState.delivered ||
+                        l.streamTraceState == LinkStreamTraceState.flooded),
+              )
+            : (isTrunkFilter
+                ? switchNode.ports.any(
+                    (p) => vm.isPortValidTrunk(switchNode.id, p.portNumber),
+                  )
+                : switchNode.ports.any(
+                    (p) => vm.doesPortCarryHighlightedVlanWorking(
+                      switchNode,
+                      p,
+                      highlightedVlan!,
+                    ),
+                  )));
 
     final poeRatio = switchNode.poeBudgetWatts > 0
         ? (switchNode.totalPoeDrawWatts / switchNode.poeBudgetWatts)
@@ -56,13 +73,13 @@ class _SwitchNodeWidgetState extends State<SwitchNodeWidget> {
         ? AppTheme.accent
         : (switchNode.isRootBridge
             ? AppTheme.warning
-            : (highlightedVlan != null && carriesHighlightedVlan
+            : (isFilterActive && carriesHighlightedFilter
                 ? AppTheme.success
                 : AppTheme.border));
 
     return AnimatedOpacity(
       duration: const Duration(milliseconds: 160),
-      opacity: carriesHighlightedVlan ? 1.0 : 0.35,
+      opacity: carriesHighlightedFilter ? 1.0 : 0.35,
       child: GestureDetector(
         dragStartBehavior: DragStartBehavior.down,
         supportedDevices: const {
@@ -310,7 +327,9 @@ class _SwitchNodeWidgetState extends State<SwitchNodeWidget> {
                           _MiniPortChip(
                             switchNode: switchNode,
                             portNumber: port.portNumber,
+                            mediaType: port.mediaType,
                             speed: port.maxSpeed,
+                            mediaSpeedLabel: port.mediaSpeedLabel,
                             isTrunk: port.portMode == SwitchPortMode.trunk,
                             isConnected:
                                 vm.isPortConnected(switchNode.id, port.portNumber),
@@ -320,11 +339,44 @@ class _SwitchNodeWidgetState extends State<SwitchNodeWidget> {
                                     switchNode.id &&
                                 vm.pendingWireSource?.portNumber ==
                                     port.portNumber,
-                            carriesHighlightedVlan: highlightedVlan != null &&
-                                port.permitsVlan(
-                                  highlightedVlan,
-                                  switchSupportsVlans: switchNode.supportsVlans,
+                            isDimmedForWiring: vm.pendingWireSource != null &&
+                                !vm.isPortConnected(
+                                    switchNode.id, port.portNumber) &&
+                                !vm.isPortMediaCompatibleWithPendingWire(
+                                  switchNode.id,
+                                  port.portNumber,
                                 ),
+                            portTraceState: isStreamTrace
+                                ? vm.linkForPort(switchNode.id, port.portNumber)
+                                    ?.streamTraceState
+                                : null,
+                            carriesHighlightedVlan: isStreamTrace
+                                ? ((vm
+                                            .linkForPort(
+                                              switchNode.id,
+                                              port.portNumber,
+                                            )
+                                            ?.streamTraceState ==
+                                        LinkStreamTraceState.delivered) ||
+                                    (vm
+                                            .linkForPort(
+                                              switchNode.id,
+                                              port.portNumber,
+                                            )
+                                            ?.streamTraceState ==
+                                        LinkStreamTraceState.flooded))
+                                : (isTrunkFilter
+                                    ? vm.isPortValidTrunk(
+                                        switchNode.id,
+                                        port.portNumber,
+                                      )
+                                    : (highlightedVlan != null &&
+                                        vm.doesPortCarryHighlightedVlanWorking(
+                                          switchNode,
+                                          port,
+                                          highlightedVlan,
+                                        ))),
+                            isFilterActive: isFilterActive,
                             isBlockedOnLink: vm.project.links.any((l) =>
                                 l.stpState == LinkStpState.blocking &&
                                 l.blockedAtNodeId == switchNode.id &&
@@ -437,46 +489,66 @@ class _MiniPortChip extends StatelessWidget {
   const _MiniPortChip({
     required this.switchNode,
     required this.portNumber,
+    required this.mediaType,
     required this.speed,
+    required this.mediaSpeedLabel,
     required this.isTrunk,
     required this.isConnected,
     required this.isSelected,
     required this.isPendingSource,
+    required this.isDimmedForWiring,
+    this.portTraceState,
     required this.carriesHighlightedVlan,
+    required this.isFilterActive,
     required this.isBlockedOnLink,
     required this.onTap,
   });
 
   final SwitchNodeInstance switchNode;
   final int portNumber;
+  final PortMediaType mediaType;
   final PortSpeed speed;
+  final String mediaSpeedLabel;
   final bool isTrunk;
   final bool isConnected;
   final bool isSelected;
   final bool isPendingSource;
+  final bool isDimmedForWiring;
+  final LinkStreamTraceState? portTraceState;
   final bool carriesHighlightedVlan;
+  final bool isFilterActive;
   final bool isBlockedOnLink;
   final VoidCallback onTap;
 
   @override
   Widget build(BuildContext context) {
-    Color bg = AppTheme.surfaceHigh;
-    Color border = AppTheme.border;
-    Color text = AppTheme.textMuted;
+    final isSfp = mediaType == PortMediaType.sfpFibre;
+    Color bg = isSfp ? AppTheme.accent.withValues(alpha: 0.06) : AppTheme.surfaceHigh;
+    Color border =
+        isSfp ? AppTheme.accent.withValues(alpha: 0.45) : AppTheme.border;
+    Color text = isSfp ? AppTheme.accent : AppTheme.textMuted;
 
     if (isPendingSource) {
       bg = AppTheme.accent.withValues(alpha: 0.25);
       border = AppTheme.accent;
       text = AppTheme.textPrimary;
-    } else if (isBlockedOnLink) {
-      bg = AppTheme.error.withValues(alpha: 0.22);
-      border = AppTheme.error;
-      text = AppTheme.error;
+    } else if (portTraceState == LinkStreamTraceState.delivered) {
+      bg = AppTheme.success.withValues(alpha: 0.24);
+      border = AppTheme.success;
+      text = AppTheme.success;
+    } else if (portTraceState == LinkStreamTraceState.flooded) {
+      bg = AppTheme.warning.withValues(alpha: 0.24);
+      border = AppTheme.warning;
+      text = AppTheme.warning;
     } else if (carriesHighlightedVlan && isConnected) {
       bg = AppTheme.success.withValues(alpha: 0.22);
       border = AppTheme.success;
       text = AppTheme.success;
-    } else if (isConnected) {
+    } else if (!isFilterActive && isBlockedOnLink) {
+      bg = AppTheme.error.withValues(alpha: 0.22);
+      border = AppTheme.error;
+      text = AppTheme.error;
+    } else if (!isFilterActive && isConnected) {
       bg = AppTheme.accent.withValues(alpha: 0.14);
       border = AppTheme.accent.withValues(alpha: 0.65);
       text = AppTheme.textPrimary;
@@ -486,31 +558,34 @@ class _MiniPortChip extends StatelessWidget {
       border = AppTheme.warning;
     }
 
-    return Tooltip(
-      message:
-          'Port $portNumber (${speed.label} • ${isTrunk ? "Trunk" : "Access"})',
-      child: InkWell(
-        onTap: onTap,
-        borderRadius: BorderRadius.circular(3),
-        child: Container(
-          width: 21,
-          height: 19,
-          alignment: Alignment.center,
-          decoration: BoxDecoration(
-            color: bg,
-            borderRadius: BorderRadius.circular(3),
-            border: Border.all(
-              color: border,
-              width: isSelected ? 1.5 : 1.0,
+    return Opacity(
+      opacity: isDimmedForWiring ? 0.22 : 1.0,
+      child: Tooltip(
+        message:
+            'Port $portNumber ($mediaSpeedLabel • ${isTrunk ? "Trunk" : "Access"})',
+        child: InkWell(
+          onTap: onTap,
+          borderRadius: BorderRadius.circular(isSfp ? 2 : 3),
+          child: Container(
+            width: 21,
+            height: 19,
+            alignment: Alignment.center,
+            decoration: BoxDecoration(
+              color: bg,
+              borderRadius: BorderRadius.circular(isSfp ? 2 : 3),
+              border: Border.all(
+                color: border,
+                width: isSelected ? 1.5 : 1.0,
+              ),
             ),
-          ),
-          child: Text(
-            '$portNumber',
-            style: TextStyle(
-              fontFamily: 'monospace',
-              fontSize: 9,
-              fontWeight: FontWeight.bold,
-              color: text,
+            child: Text(
+              '$portNumber',
+              style: TextStyle(
+                fontFamily: 'monospace',
+                fontSize: 9,
+                fontWeight: FontWeight.bold,
+                color: text,
+              ),
             ),
           ),
         ),

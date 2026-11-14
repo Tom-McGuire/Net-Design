@@ -14,8 +14,9 @@ class DeviceTemplates {
     return [
       SwitchTemplate(
         id: 'tpl-sw-8g-2sfp-poe',
-        name: 'Compact 8-Port 1G PoE + 2x 1G Uplink',
-        ports1G: 10,
+        name: 'Compact 8-Port 1G PoE + 2x 1G SFP',
+        ports1G: 8,
+        sfpPorts1G: 2,
         poeBudgetWatts: 120,
         poeStartPort: 1,
         poeEndPort: 8,
@@ -27,9 +28,10 @@ class DeviceTemplates {
       ),
       SwitchTemplate(
         id: 'tpl-sw-16g-4x10g-core',
-        name: '16-Port 1G PoE + 4x 10G Core',
+        name: '16-Port 1G PoE + 2x 1G SFP + 2x 10G SFP+ Core',
         ports1G: 16,
-        ports10G: 4,
+        sfpPorts1G: 2,
+        sfpPorts10G: 2,
         poeBudgetWatts: 370,
         poeStartPort: 1,
         poeEndPort: 16,
@@ -41,9 +43,9 @@ class DeviceTemplates {
       ),
       SwitchTemplate(
         id: 'tpl-sw-24g-4x10g-dist',
-        name: '24-Port 1G + 4x 10G Distribution',
+        name: '24-Port 1G + 4x 10G SFP+ Distribution',
         ports1G: 24,
-        ports10G: 4,
+        sfpPorts10G: 4,
         poeBudgetWatts: 0,
         supportsStp: true,
         supportsVlans: true,
@@ -88,6 +90,14 @@ class DeviceTemplates {
         nicSpeed: PortSpeed.speed1G,
         poeDrawWatts: 0.0,
         isBuiltIn: true,
+        ports: [
+          EndpointPortConfig(
+            portNumber: 1,
+            label: 'Primary sACN',
+            mediaType: PortMediaType.rj45,
+            speed: PortSpeed.speed1G,
+          ),
+        ],
         trafficProfiles: [
           TrafficRequirement(
             id: 'flow-sacn-tx',
@@ -97,6 +107,8 @@ class DeviceTemplates {
             estimatedBandwidthMbps: 4.0,
             requiresIgmp: true,
             defaultVlanId: 20,
+            boundPortNumber: 1,
+            sacnUniverseSpec: '1-16',
             label: '16x sACN Univ',
           ),
         ],
@@ -108,6 +120,15 @@ class DeviceTemplates {
         nicSpeed: PortSpeed.speed100M,
         poeDrawWatts: 12.5,
         isBuiltIn: true,
+        ports: [
+          EndpointPortConfig(
+            portNumber: 1,
+            label: 'PoE Control',
+            mediaType: PortMediaType.rj45,
+            speed: PortSpeed.speed100M,
+            poeDrawWatts: 12.5,
+          ),
+        ],
         trafficProfiles: [
           TrafficRequirement(
             id: 'flow-sacn-rx',
@@ -117,6 +138,8 @@ class DeviceTemplates {
             estimatedBandwidthMbps: 1.0,
             requiresIgmp: true,
             defaultVlanId: 20,
+            boundPortNumber: 1,
+            sacnUniverseSpec: '1-4',
             label: '4x sACN Univ',
           ),
         ],
@@ -128,6 +151,14 @@ class DeviceTemplates {
         nicSpeed: PortSpeed.speed1G,
         poeDrawWatts: 0.0,
         isBuiltIn: true,
+        ports: [
+          EndpointPortConfig(
+            portNumber: 1,
+            label: 'Primary Audio',
+            mediaType: PortMediaType.rj45,
+            speed: PortSpeed.speed1G,
+          ),
+        ],
         trafficProfiles: [
           TrafficRequirement(
             id: 'flow-dante-bidir',
@@ -137,17 +168,33 @@ class DeviceTemplates {
             estimatedBandwidthMbps: 100.0,
             requiresIgmp: true,
             defaultVlanId: 30,
+            boundPortNumber: 1,
+            multicastGroupSpec: '239.69.0.1-4',
             label: '64-Ch AES67',
           ),
         ],
       ),
       const EndpointTemplate(
         id: 'tpl-ep-media-server',
-        name: 'Video Media Server (10G NDI)',
+        name: 'Video Media Server (Dual-NIC 10G SFP+ & 1G Ctrl)',
         category: EndpointCategory.mediaServer,
         nicSpeed: PortSpeed.speed10G,
         poeDrawWatts: 0.0,
         isBuiltIn: true,
+        ports: [
+          EndpointPortConfig(
+            portNumber: 1,
+            label: 'NDI Video SFP+',
+            mediaType: PortMediaType.sfpFibre,
+            speed: PortSpeed.speed10G,
+          ),
+          EndpointPortConfig(
+            portNumber: 2,
+            label: 'Control RJ45',
+            mediaType: PortMediaType.rj45,
+            speed: PortSpeed.speed1G,
+          ),
+        ],
         trafficProfiles: [
           TrafficRequirement(
             id: 'flow-ndi-tx',
@@ -157,6 +204,8 @@ class DeviceTemplates {
             estimatedBandwidthMbps: 250.0,
             requiresIgmp: true,
             defaultVlanId: 40,
+            boundPortNumber: 1,
+            multicastGroupSpec: '239.255.10.1-2',
             label: '2x NDI HD',
           ),
         ],
@@ -316,7 +365,24 @@ class DeviceTemplates {
     );
     final epFohAudio = _makeEndpoint(
       id: 'ep-foh-audio',
-      template: epTemplates[2],
+      template: epTemplates[2].copyWith(
+        trafficProfiles: [
+          epTemplates[2].trafficProfiles.first.copyWith(
+            id: 'flow-dante-foh-tx',
+            direction: TrafficDirection.txPublisher,
+            estimatedBandwidthMbps: 50.0,
+            multicastGroupSpec: '239.69.0.1-2',
+            label: '32-Ch AES67 TX',
+          ),
+          epTemplates[2].trafficProfiles.first.copyWith(
+            id: 'flow-dante-foh-rx',
+            direction: TrafficDirection.rxSubscriber,
+            estimatedBandwidthMbps: 50.0,
+            multicastGroupSpec: '239.69.0.3-4',
+            label: '32-Ch AES67 RX',
+          ),
+        ],
+      ),
       label: 'FOH Mix Engine',
       ip: '10.30.0.10',
       dx: 650,
@@ -332,7 +398,14 @@ class DeviceTemplates {
     );
     final epNodeR = _makeEndpoint(
       id: 'ep-node-r',
-      template: epTemplates[1],
+      template: epTemplates[1].copyWith(
+        trafficProfiles: [
+          epTemplates[1].trafficProfiles.first.copyWith(
+            sacnUniverseSpec: '5-8',
+            label: '4x sACN Univ',
+          ),
+        ],
+      ),
       label: 'Stage Right sACN Node',
       ip: '10.20.0.22',
       dx: 540,
@@ -340,7 +413,24 @@ class DeviceTemplates {
     );
     final epStagebox = _makeEndpoint(
       id: 'ep-stagebox-r',
-      template: epTemplates[2],
+      template: epTemplates[2].copyWith(
+        trafficProfiles: [
+          epTemplates[2].trafficProfiles.first.copyWith(
+            id: 'flow-dante-stage-tx',
+            direction: TrafficDirection.txPublisher,
+            estimatedBandwidthMbps: 50.0,
+            multicastGroupSpec: '239.69.0.3-4',
+            label: '32-Ch AES67 TX',
+          ),
+          epTemplates[2].trafficProfiles.first.copyWith(
+            id: 'flow-dante-stage-rx',
+            direction: TrafficDirection.rxSubscriber,
+            estimatedBandwidthMbps: 50.0,
+            multicastGroupSpec: '239.69.0.1-2',
+            label: '32-Ch AES67 RX',
+          ),
+        ],
+      ),
       label: 'Stage Right 64-Ch Box',
       ip: '10.30.0.21',
       dx: 760,
@@ -413,6 +503,11 @@ class DeviceTemplates {
       switches: [swCore, swLeft, swRight],
       endpoints: [epConsole, epFohAudio, epNodeL, epNodeR, epStagebox],
       links: links,
+      knownVlans: {
+        1: 'Default / Mgmt',
+        20: 'sACN / Lighting',
+        30: 'Dante / Audio',
+      },
     );
   }
 
@@ -573,6 +668,10 @@ class DeviceTemplates {
       switches: [swCore, swTruss1, swTruss2],
       endpoints: [epConsole, epNode1, epNode2],
       links: links,
+      knownVlans: {
+        1: 'Default / Mgmt',
+        20: 'sACN / Lighting',
+      },
     );
   }
 
@@ -677,6 +776,9 @@ class DeviceTemplates {
       switches: [swStage, swDumb],
       endpoints: [epPixel, epNode100M],
       links: links,
+      knownVlans: {
+        1: 'Default / Art-Net',
+      },
     );
   }
 
@@ -720,6 +822,7 @@ class DeviceTemplates {
     required double dx,
     required double dy,
   }) {
+    final effectivePorts = List<EndpointPortConfig>.from(template.effectivePorts);
     return EndpointNodeInstance(
       id: id,
       templateId: template.id,
@@ -727,6 +830,7 @@ class DeviceTemplates {
       category: template.category,
       nicSpeed: template.nicSpeed,
       ipAddress: ip,
+      ports: effectivePorts,
       activeTrafficFlows: List.from(template.trafficProfiles),
       poeDrawWatts: template.poeDrawWatts,
       dx: dx,
