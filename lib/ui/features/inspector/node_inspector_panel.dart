@@ -24,12 +24,48 @@ class NodeInspectorPanel extends StatefulWidget {
 
 class _NodeInspectorPanelState extends State<NodeInspectorPanel> {
   final TextEditingController _labelCtrl = TextEditingController();
+  final TextEditingController _macCtrl = TextEditingController();
   final TextEditingController _ipCtrl = TextEditingController();
+  final FocusNode _macFocusNode = FocusNode();
+  String? _macErrorText;
   String? _syncedEntityKey;
 
   @override
+  void initState() {
+    super.initState();
+    _macFocusNode.addListener(_onMacFocusChanged);
+  }
+
+  void _onMacFocusChanged() {
+    if (_macFocusNode.hasFocus) return;
+    final vm = context.read<SandboxViewModel>();
+    final sw = vm.selectedSwitch;
+    if (sw == null) return;
+    final normalized = SwitchNodeInstance.normalizeMac(_macCtrl.text);
+    if (normalized != null) {
+      if (_macCtrl.text != normalized) {
+        _macCtrl.text = normalized;
+      }
+      if (sw.macAddress != normalized) {
+        vm.updateSwitch(sw.copyWith(macAddress: normalized));
+      }
+      if (_macErrorText != null) {
+        setState(() => _macErrorText = null);
+      }
+    } else {
+      _macCtrl.text = sw.macAddress;
+      if (_macErrorText != null) {
+        setState(() => _macErrorText = null);
+      }
+    }
+  }
+
+  @override
   void dispose() {
+    _macFocusNode.removeListener(_onMacFocusChanged);
+    _macFocusNode.dispose();
     _labelCtrl.dispose();
+    _macCtrl.dispose();
     _ipCtrl.dispose();
     super.dispose();
   }
@@ -39,7 +75,12 @@ class _NodeInspectorPanelState extends State<NodeInspectorPanel> {
     if (_syncedEntityKey != key) {
       _syncedEntityKey = key;
       _labelCtrl.text = sw.userLabel;
+      _macCtrl.text = sw.macAddress;
+      _macErrorText = null;
       _ipCtrl.text = sw.managementIp ?? '';
+    } else if (!_macFocusNode.hasFocus && _macCtrl.text != sw.macAddress) {
+      _macCtrl.text = sw.macAddress;
+      _macErrorText = null;
     }
   }
 
@@ -154,35 +195,46 @@ class _NodeInspectorPanelState extends State<NodeInspectorPanel> {
         Row(
           children: [
             Expanded(
-              child: Container(
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
-                decoration: BoxDecoration(
-                  color: AppTheme.surfaceHigh,
-                  borderRadius: BorderRadius.circular(6),
-                  border: Border.all(color: AppTheme.border),
+              child: TextField(
+                controller: _macCtrl,
+                focusNode: _macFocusNode,
+                style: TextStyle(
+                  fontFamily: 'monospace',
+                  fontSize: 11.5,
+                  fontWeight: FontWeight.bold,
+                  color: AppTheme.textPrimary,
                 ),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      'Bridge MAC',
-                      style: TextStyle(
-                        fontSize: 10,
-                        color: AppTheme.textSecondary,
-                      ),
-                    ),
-                    SelectableText(
-                      sw.macAddress,
-                      style: TextStyle(
-                        fontFamily: 'monospace',
-                        fontSize: 11.5,
-                        fontWeight: FontWeight.bold,
-                        color: AppTheme.textPrimary,
-                      ),
-                    ),
-                  ],
+                decoration: InputDecoration(
+                  labelText: 'Bridge MAC',
+                  hintText: '02:10:00:00:00:10',
+                  errorText: _macErrorText,
+                  errorStyle: const TextStyle(fontSize: 10),
                 ),
+                onChanged: (val) {
+                  final normalized = SwitchNodeInstance.normalizeMac(val);
+                  if (normalized != null) {
+                    if (_macErrorText != null) {
+                      setState(() => _macErrorText = null);
+                    }
+                    if (sw.macAddress != normalized) {
+                      vm.updateSwitch(sw.copyWith(macAddress: normalized));
+                    }
+                  } else {
+                    if (_macErrorText == null) {
+                      setState(() => _macErrorText = 'Need 12 hex digits');
+                    }
+                  }
+                },
+                onSubmitted: (val) {
+                  final normalized = SwitchNodeInstance.normalizeMac(val);
+                  if (normalized != null) {
+                    _macCtrl.text = normalized;
+                    if (sw.macAddress != normalized) {
+                      vm.updateSwitch(sw.copyWith(macAddress: normalized));
+                    }
+                    setState(() => _macErrorText = null);
+                  }
+                },
               ),
             ),
             const SizedBox(width: 8),

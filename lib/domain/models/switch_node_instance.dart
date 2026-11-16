@@ -177,6 +177,16 @@ class SwitchNodeInstance {
     totalPoeDrawWatts = 0.0;
   }
 
+  /// Normalizes any 12-hex-digit MAC (colon, dash, Cisco dot, or raw hex) to
+  /// uppercase `XX:XX:XX:XX:XX:XX`, or returns `null` if invalid/incomplete.
+  static String? normalizeMac(String input) {
+    final cleaned = input.replaceAll(RegExp(r'[:\-\.\s]'), '').toUpperCase();
+    if (!RegExp(r'^[0-9A-F]{12}$').hasMatch(cleaned)) return null;
+    return [
+      for (var i = 0; i < 12; i += 2) cleaned.substring(i, i + 2),
+    ].join(':');
+  }
+
   static int parseMacToInt(String mac) {
     final cleaned = mac.replaceAll(RegExp(r'[^0-9A-Fa-f]'), '');
     if (cleaned.isEmpty) return 0;

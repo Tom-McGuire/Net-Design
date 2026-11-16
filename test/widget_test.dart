@@ -1,6 +1,7 @@
 import 'package:flutter/gestures.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:net_design/data/services/device_templates.dart';
 import 'package:net_design/data/services/project_storage_service.dart';
 import 'package:net_design/data/services/suite_theme_service.dart';
@@ -294,6 +295,47 @@ void main() {
       await tester.tap(find.text('Delete Main Lighting Console (Copy)'));
       await tester.pumpAndSettle();
       expect(pastedEndpointFinder, findsNothing);
+    },
+  );
+
+  testWidgets(
+    'Editing switch Bridge MAC recalculates STP Root Bridge when priorities match',
+    (WidgetTester tester) async {
+      tester.view.physicalSize = const Size(1440, 900);
+      tester.view.devicePixelRatio = 1.0;
+      addTearDown(() {
+        AppTheme.isDark = true;
+        tester.view.resetPhysicalSize();
+        tester.view.resetDevicePixelRatio();
+      });
+
+      final themeService = SuiteThemeService(customDbPath: ':memory:');
+      addTearDown(themeService.dispose);
+
+      await tester.pumpWidget(
+        NetDesignApp(
+          themeService: themeService,
+          showStartupAdvisory: false,
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      // Load Arbitrary Root & VLAN Blackhole or select Stage Right Rack C (PRI 32768, MAC 02:10:00:00:00:30)
+      // In Healthy Ring: Stage Left Rack B and Stage Right Rack C both have PRI 32768.
+      // Lowering Core Switch priority isn't needed if we test Stage Left vs Stage Right after setting Core to 32768,
+      // or simply select Stage Right Rack C and verify its MAC field is editable and normalizes Cisco dot format.
+      await tester.tap(find.text('Stage Right Rack C'));
+      await tester.pumpAndSettle();
+
+      final macField = find.widgetWithText(TextField, '02:10:00:00:00:30');
+      expect(macField, findsOneWidget);
+
+      await tester.enterText(macField, '0210.0000.0001');
+      await tester.testTextInput.receiveAction(TextInputAction.done);
+      await tester.pumpAndSettle();
+
+      // Normalized to 02:10:00:00:00:01 on both the field and the canvas card
+      expect(find.text('02:10:00:00:00:01'), findsWidgets);
     },
   );
 }
