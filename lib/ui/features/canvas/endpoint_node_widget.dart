@@ -8,6 +8,7 @@ import '../../../domain/models/enums.dart';
 import '../../theme/app_theme.dart';
 import '../../widgets/rename_device_dialog.dart';
 import '../sandbox_view_model.dart';
+import 'node_context_menu.dart';
 
 const double kEndpointCardWidth = 228.0;
 const double kEndpointCardMinHeight = 104.0;
@@ -101,6 +102,7 @@ class _EndpointNodeWidgetState extends State<EndpointNodeWidget> {
           PointerDeviceKind.invertedStylus,
         },
         onTap: () {
+          Focus.maybeOf(context)?.requestFocus();
           if (vm.pendingWireSource != null && compatibleFreePort != null) {
             vm.completeWiringToPort(endpointNode.id, compatibleFreePort);
           } else if (vm.pendingWireSource != null && freeAnyPort != null) {
@@ -109,6 +111,18 @@ class _EndpointNodeWidgetState extends State<EndpointNodeWidget> {
           } else {
             vm.selectEndpoint(endpointNode.id);
           }
+        },
+        onSecondaryTapUp: (details) {
+          Focus.maybeOf(context)?.requestFocus();
+          vm.selectEndpoint(endpointNode.id);
+          showDeviceContextMenu(
+            context: context,
+            globalPosition: details.globalPosition,
+            vm: vm,
+            nodeLabel: endpointNode.userLabel,
+            onCopy: () => vm.copyEndpoint(endpointNode.id),
+            onDelete: () => vm.removeNode(endpointNode.id),
+          );
         },
         onPanStart: (details) {
           _dragStartNodePos = Offset(endpointNode.dx, endpointNode.dy);

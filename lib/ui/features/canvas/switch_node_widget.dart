@@ -7,6 +7,7 @@ import '../../../domain/models/switch_node_instance.dart';
 import '../../theme/app_theme.dart';
 import '../../widgets/rename_device_dialog.dart';
 import '../sandbox_view_model.dart';
+import 'node_context_menu.dart';
 
 const double kSwitchCardWidth = 268.0;
 const double kSwitchCardMinHeight = 148.0;
@@ -88,7 +89,22 @@ class _SwitchNodeWidgetState extends State<SwitchNodeWidget> {
           PointerDeviceKind.stylus,
           PointerDeviceKind.invertedStylus,
         },
-        onTap: () => vm.selectSwitch(switchNode.id),
+        onTap: () {
+          Focus.maybeOf(context)?.requestFocus();
+          vm.selectSwitch(switchNode.id);
+        },
+        onSecondaryTapUp: (details) {
+          Focus.maybeOf(context)?.requestFocus();
+          vm.selectSwitch(switchNode.id);
+          showDeviceContextMenu(
+            context: context,
+            globalPosition: details.globalPosition,
+            vm: vm,
+            nodeLabel: switchNode.userLabel,
+            onCopy: () => vm.copySwitch(switchNode.id),
+            onDelete: () => vm.removeNode(switchNode.id),
+          );
+        },
         onPanStart: (details) {
           _dragStartNodePos = Offset(switchNode.dx, switchNode.dy);
           _dragStartGlobalPos = details.globalPosition;

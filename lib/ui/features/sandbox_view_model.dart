@@ -73,6 +73,21 @@ class SandboxViewModel extends ChangeNotifier {
   int? _highlightedVlanId;
   int? get highlightedVlanId => _highlightedVlanId;
 
+  Offset? _viewportCenterWorld;
+  SwitchNodeInstance? _copiedSwitch;
+  EndpointNodeInstance? _copiedEndpoint;
+
+  bool get hasCopiedDevice => _copiedSwitch != null || _copiedEndpoint != null;
+  bool get copiedDeviceIsSwitch => _copiedSwitch != null;
+  String? get copiedDeviceLabel =>
+      _copiedSwitch?.userLabel ?? _copiedEndpoint?.userLabel;
+
+  /// Updates the current canvas viewport center in world coordinates without
+  /// notifying listeners, so newly added or pasted devices appear in view.
+  void updateViewportCenter(Offset? worldCenter) {
+    _viewportCenterWorld = worldCenter;
+  }
+
   bool _isTrunkFilterActive = false;
   bool get isTrunkFilterActive => _isTrunkFilterActive;
 
@@ -503,12 +518,71 @@ class SandboxViewModel extends ChangeNotifier {
 
   // --- Node & Link Mutations ---
 
+  Offset _resolveSpawnPosition({
+    required double cardWidth,
+    required double cardHeight,
+    double? dx,
+    double? dy,
+    required Offset fallback,
+  }) {
+    if (dx != null && dy != null) {
+      return Offset(dx.clamp(16.0, 3300.0), dy.clamp(16.0, 2350.0));
+    }
+    final center = _viewportCenterWorld;
+    if (center == null) {
+      return Offset(
+        fallback.dx.clamp(16.0, 3300.0),
+        fallback.dy.clamp(16.0, 2350.0),
+      );
+    }
+
+    var x = (center.dx - cardWidth / 2).clamp(16.0, 3300.0);
+    var y = (center.dy - cardHeight / 2).clamp(16.0, 2350.0);
+
+    bool overlapsExisting(double cx, double cy) {
+      for (final s in _project.switches) {
+        if ((s.dx - cx).abs() < 20.0 && (s.dy - cy).abs() < 20.0) return true;
+      }
+      for (final e in _project.endpoints) {
+        if ((e.dx - cx).abs() < 20.0 && (e.dy - cy).abs() < 20.0) return true;
+      }
+      return false;
+    }
+
+    for (var step = 0; step < 10 && overlapsExisting(x, y); step++) {
+      x = (x + 28.0).clamp(16.0, 3300.0);
+      y = (y + 28.0).clamp(16.0, 2350.0);
+    }
+    return Offset(x, y);
+  }
+
+  String _nextCopyLabel(String sourceLabel, Set<String> existingLabels) {
+    final base = sourceLabel.replaceFirst(RegExp(r'\s*\(Copy(?:\s+\d+)?\)$'), '');
+    final first = '$base (Copy)';
+    if (!existingLabels.contains(first)) return first;
+    var n = 2;
+    while (existingLabels.contains('$base (Copy $n)')) {
+      n++;
+    }
+    return '$base (Copy $n)';
+  }
+
   SwitchNodeInstance addSwitchFromTemplate(
     SwitchTemplate template, {
     double? dx,
     double? dy,
   }) {
     final index = _project.switches.length + 1;
+    final pos = _resolveSpawnPosition(
+      cardWidth: 268.0,
+      cardHeight: 148.0,
+      dx: dx,
+      dy: dy,
+      fallback: Offset(
+        160.0 + (index * 45) % 420,
+        110.0 + (index * 35) % 240,
+      ),
+    );
     final vlans = <int, SwitchVlanSettings>{
       for (final entry in _project.knownVlans.entries)
         entry.key: SwitchVlanSettings(
@@ -531,8 +605,8 @@ class SandboxViewModel extends ChangeNotifier {
       supportsIgmpQuerier: template.supportsIgmpQuerier,
       vlanConfigs: vlans,
       ports: template.generateDefaultPorts(),
-      dx: dx ?? (160.0 + (index * 45) % 420),
-      dy: dy ?? (110.0 + (index * 35) % 240),
+      dx: pos.dx,
+      dy: pos.dy,
     );
     _project.switches.add(sw);
     _revalidate();
@@ -546,6 +620,16 @@ class SandboxViewModel extends ChangeNotifier {
     double? dy,
   }) {
     final index = _project.endpoints.length + 1;
+    final pos = _resolveSpawnPosition(
+      cardWidth: 228.0,
+      cardHeight: 104.0,
+      dx: dx,
+      dy: dy,
+      fallback: Offset(
+        150.0 + (index * 55) % 500,
+        420.0 + (index * 25) % 160,
+      ),
+    );
     final ep = EndpointNodeInstance(
       id: 'ep-${_uuid.v4().substring(0, 8)}',
       templateId: template.id,
@@ -557,8 +641,8 @@ class SandboxViewModel extends ChangeNotifier {
           .map((f) => f.copyWith(id: 'flow-${_uuid.v4().substring(0, 6)}'))
           .toList(),
       poeDrawWatts: template.poeDrawWatts,
-      dx: dx ?? (150.0 + (index * 55) % 500),
-      dy: dy ?? (420.0 + (index * 25) % 160),
+      dx: pos.dx,
+      dy: pos.dy,
     );
     _project.endpoints.add(ep);
     for (final f in ep.activeTrafficFlows) {
@@ -637,6 +721,158 @@ class SandboxViewModel extends ChangeNotifier {
     }
     _revalidate();
     notifyListeners();
+  }
+
+  void copySwitch(String switchId) {
+    final sw = _project.switches.where((s) => s.id == switchId).firstOrNull;
+    if (sw == null) return;
+    _copiedSwitch = sw.copyWith(
+      vlanConfigs: {
+        for (final entry in sw.vlanConfigs.entries)
+          entry.key: entry.value.copyWith(),
+      },
+      ports: [
+        for (final p in sw.ports) p.copyWith(),
+      ],
+    );
+    _copiedEndpoint = null;
+    _lastStatusMessage = 'Copied ${sw.userLabel}.';
+    notifyListeners();
+  }
+
+  void copyEndpoint(String endpointId) {
+    final ep = _project.endpoints.where((e) => e.id == endpointId).firstOrNull;
+    if (ep == null) return;
+    _copiedEndpoint = ep.copyWith(
+      ports: [
+        for (final p in ep.effectivePorts) p.copyWith(),
+      ],
+      activeTrafficFlows: [
+        for (final f in ep.activeTrafficFlows) f.copyWith(),
+      ],
+    );
+    _copiedSwitch = null;
+    _lastStatusMessage = 'Copied ${ep.userLabel}.';
+    notifyListeners();
+  }
+
+  bool copySelectedNode() {
+    if (_selectedSwitchId != null) {
+      copySwitch(_selectedSwitchId!);
+      return true;
+    }
+    if (_selectedEndpointId != null) {
+      copyEndpoint(_selectedEndpointId!);
+      return true;
+    }
+    return false;
+  }
+
+  Object? pasteCopiedNode({double? dx, double? dy}) {
+    final swSource = _copiedSwitch;
+    if (swSource != null) {
+      final pos = _resolveSpawnPosition(
+        cardWidth: 268.0,
+        cardHeight: 148.0,
+        dx: dx,
+        dy: dy,
+        fallback: Offset(swSource.dx + 36.0, swSource.dy + 36.0),
+      );
+      final label = _nextCopyLabel(
+        swSource.userLabel,
+        _project.switches.map((s) => s.userLabel).toSet(),
+      );
+      final pasted = SwitchNodeInstance(
+        id: 'sw-${_uuid.v4().substring(0, 8)}',
+        templateId: swSource.templateId,
+        userLabel: label,
+        macAddress: SwitchNodeInstance.generateRandomLocalMac(_rng),
+        managementIp: swSource.managementIp,
+        stpMode: swSource.stpMode,
+        stpPriority: swSource.stpPriority,
+        poeBudgetWatts: swSource.poeBudgetWatts,
+        supportsStp: swSource.supportsStp,
+        supportsVlans: swSource.supportsVlans,
+        supportsIgmpSnooping: swSource.supportsIgmpSnooping,
+        supportsIgmpQuerier: swSource.supportsIgmpQuerier,
+        vlanConfigs: {
+          for (final entry in swSource.vlanConfigs.entries)
+            entry.key: entry.value.copyWith(),
+        },
+        ports: [
+          for (final p in swSource.ports) p.copyWith(),
+        ],
+        dx: pos.dx,
+        dy: pos.dy,
+      );
+      _project.switches.add(pasted);
+      _revalidate();
+      _lastStatusMessage = 'Pasted ${pasted.userLabel}.';
+      selectSwitch(pasted.id);
+      return pasted;
+    }
+
+    final epSource = _copiedEndpoint;
+    if (epSource != null) {
+      final pos = _resolveSpawnPosition(
+        cardWidth: 228.0,
+        cardHeight: 104.0,
+        dx: dx,
+        dy: dy,
+        fallback: Offset(epSource.dx + 36.0, epSource.dy + 36.0),
+      );
+      final label = _nextCopyLabel(
+        epSource.userLabel,
+        _project.endpoints.map((e) => e.userLabel).toSet(),
+      );
+      final pasted = EndpointNodeInstance(
+        id: 'ep-${_uuid.v4().substring(0, 8)}',
+        templateId: epSource.templateId,
+        userLabel: label,
+        category: epSource.category,
+        nicSpeed: epSource.nicSpeed,
+        macAddress: epSource.macAddress,
+        ipAddress: epSource.ipAddress,
+        ports: [
+          for (final p in epSource.effectivePorts) p.copyWith(),
+        ],
+        activeTrafficFlows: epSource.activeTrafficFlows
+            .map((f) => f.copyWith(id: 'flow-${_uuid.v4().substring(0, 6)}'))
+            .toList(),
+        poeDrawWatts: epSource.poeDrawWatts,
+        dx: pos.dx,
+        dy: pos.dy,
+      );
+      _project.endpoints.add(pasted);
+      _revalidate();
+      _lastStatusMessage = 'Pasted ${pasted.userLabel}.';
+      selectEndpoint(pasted.id);
+      return pasted;
+    }
+
+    return null;
+  }
+
+  bool deleteSelectedItem() {
+    if (_selectedSwitchId != null) {
+      removeNode(_selectedSwitchId!);
+      _lastStatusMessage = 'Deleted selected switch.';
+      notifyListeners();
+      return true;
+    }
+    if (_selectedEndpointId != null) {
+      removeNode(_selectedEndpointId!);
+      _lastStatusMessage = 'Deleted selected endpoint.';
+      notifyListeners();
+      return true;
+    }
+    if (_selectedLinkId != null) {
+      removeLink(_selectedLinkId!);
+      _lastStatusMessage = 'Deleted selected link.';
+      notifyListeners();
+      return true;
+    }
+    return false;
   }
 
   void updateSwitch(SwitchNodeInstance updated) {

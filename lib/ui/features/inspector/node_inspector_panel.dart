@@ -561,18 +561,26 @@ class _NodeInspectorPanelState extends State<NodeInspectorPanel> {
         Row(
           mainAxisAlignment: MainAxisAlignment.spaceBetween,
           children: [
-            Text(
-              'Network Interfaces (${effectivePorts.length})',
-              style: TextStyle(
-                fontSize: 11.5,
-                fontWeight: FontWeight.w700,
-                color: AppTheme.textSecondary,
+            Expanded(
+              child: Text(
+                'Network Interfaces (${effectivePorts.length})',
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                  fontSize: 11.5,
+                  fontWeight: FontWeight.w700,
+                  color: AppTheme.textSecondary,
+                ),
               ),
             ),
             TextButton.icon(
               onPressed: effectivePorts.length < 8
                   ? () => _addEndpointNicPort(vm, ep)
                   : null,
+              style: TextButton.styleFrom(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                minimumSize: Size.zero,
+                tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+              ),
               icon: const Icon(Icons.add, size: 14),
               label: const Text('Add NIC Port', style: TextStyle(fontSize: 11)),
             ),
@@ -590,16 +598,24 @@ class _NodeInspectorPanelState extends State<NodeInspectorPanel> {
         Row(
           mainAxisAlignment: MainAxisAlignment.spaceBetween,
           children: [
-            Text(
-              'Traffic Demand Profiles',
-              style: TextStyle(
-                fontSize: 11.5,
-                fontWeight: FontWeight.w700,
-                color: AppTheme.textSecondary,
+            Expanded(
+              child: Text(
+                'Traffic Demand Profiles',
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                  fontSize: 11.5,
+                  fontWeight: FontWeight.w700,
+                  color: AppTheme.textSecondary,
+                ),
               ),
             ),
             TextButton.icon(
               onPressed: () => _addEndpointFlow(context, vm, ep),
+              style: TextButton.styleFrom(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                minimumSize: Size.zero,
+                tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+              ),
               icon: const Icon(Icons.add, size: 14),
               label: const Text('Add Flow', style: TextStyle(fontSize: 11)),
             ),

@@ -1,10 +1,13 @@
-import 'package:material_ui/material_ui.dart';
+import 'package:flutter/gestures.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:net_design/data/services/device_templates.dart';
 import 'package:net_design/data/services/project_storage_service.dart';
 import 'package:net_design/data/services/suite_theme_service.dart';
 import 'package:net_design/domain/engine/topology_validator.dart';
 import 'package:net_design/main.dart';
+import 'package:net_design/ui/features/canvas/endpoint_node_widget.dart';
+import 'package:net_design/ui/features/canvas/switch_node_widget.dart';
 import 'package:net_design/ui/features/sandbox_view_model.dart';
 import 'package:net_design/ui/theme/app_theme.dart';
 import 'package:net_design/ui/widgets/top_control_bar.dart';
@@ -47,6 +50,7 @@ void main() {
       expect(find.text('Highlight VLAN:'), findsOneWidget);
       expect(find.text('Device Library'), findsOneWidget);
       expect(find.text('Scenarios'), findsOneWidget);
+      expect(find.byTooltip('User Manual (PDF)'), findsOneWidget);
 
       // Switching between dark and light mode must NOT re-open the startup advisory
       expect(AppTheme.isDark, isTrue);
@@ -188,4 +192,108 @@ void main() {
     final brokenTrunk = broken.links.firstWhere((l) => l.id == 'lnk-brk-2');
     expect(brokenTrunk.isValidTrunk, isFalse);
   });
+
+  test('New devices spawn at viewport center without stacking', () {
+    final vm = SandboxViewModel();
+    vm.newBlankProject();
+    vm.updateViewportCenter(const Offset(1800, 1200));
+
+    final sw1 = vm.addSwitchFromTemplate(vm.switchTemplates.first);
+    expect(sw1.dx, closeTo(1800 - 268.0 / 2, 0.1));
+    expect(sw1.dy, closeTo(1200 - 148.0 / 2, 0.1));
+
+    // Second device at same viewport center should nudge by 28px so it doesn't overlap
+    final sw2 = vm.addSwitchFromTemplate(vm.switchTemplates.first);
+    expect(sw2.dx, closeTo(sw1.dx + 28.0, 0.1));
+    expect(sw2.dy, closeTo(sw1.dy + 28.0, 0.1));
+
+    // Endpoint centered around viewport center
+    vm.updateViewportCenter(const Offset(2400, 900));
+    final ep1 = vm.addEndpointFromTemplate(vm.endpointTemplates.first);
+    expect(ep1.dx, closeTo(2400 - 228.0 / 2, 0.1));
+    expect(ep1.dy, closeTo(900 - 104.0 / 2, 0.1));
+  });
+
+  testWidgets(
+    'Right-click context menu and Ctrl+C / Ctrl+V / Delete shortcuts work for switches and endpoints',
+    (WidgetTester tester) async {
+      tester.view.physicalSize = const Size(1440, 900);
+      tester.view.devicePixelRatio = 1.0;
+      addTearDown(() {
+        AppTheme.isDark = true;
+        tester.view.resetPhysicalSize();
+        tester.view.resetDevicePixelRatio();
+      });
+
+      final themeService = SuiteThemeService(customDbPath: ':memory:');
+      addTearDown(themeService.dispose);
+
+      await tester.pumpWidget(
+        NetDesignApp(
+          themeService: themeService,
+          showStartupAdvisory: false,
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      // Right-click on FOH Core Switch A
+      final coreFinder = find.text('FOH Core Switch A');
+      expect(coreFinder, findsOneWidget);
+      await tester.tap(coreFinder, buttons: kSecondaryMouseButton);
+      await tester.pumpAndSettle();
+
+      expect(find.text('Copy FOH Core Switch A'), findsOneWidget);
+      expect(find.text('Delete FOH Core Switch A'), findsOneWidget);
+
+      // Copy FOH Core Switch A via context menu
+      await tester.tap(find.text('Copy FOH Core Switch A'));
+      await tester.pumpAndSettle();
+
+      // Paste via Ctrl+V
+      await tester.sendKeyDownEvent(LogicalKeyboardKey.controlLeft);
+      await tester.sendKeyEvent(LogicalKeyboardKey.keyV);
+      await tester.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
+      await tester.pumpAndSettle();
+
+      final pastedSwitchFinder = find.descendant(
+        of: find.byType(SwitchNodeWidget),
+        matching: find.text('FOH Core Switch A (Copy)'),
+      );
+      expect(pastedSwitchFinder, findsOneWidget);
+
+      // Delete pasted switch via Delete key
+      await tester.sendKeyEvent(LogicalKeyboardKey.delete);
+      await tester.pumpAndSettle();
+      expect(pastedSwitchFinder, findsNothing);
+
+      // Select Main Lighting Console endpoint, copy with Ctrl+C, paste with Ctrl+V, delete via right-click
+      await tester.tap(find.text('Main Lighting Console'));
+      await tester.pumpAndSettle();
+
+      await tester.sendKeyDownEvent(LogicalKeyboardKey.controlLeft);
+      await tester.sendKeyEvent(LogicalKeyboardKey.keyC);
+      await tester.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
+      await tester.pumpAndSettle();
+
+      await tester.sendKeyDownEvent(LogicalKeyboardKey.controlLeft);
+      await tester.sendKeyEvent(LogicalKeyboardKey.keyV);
+      await tester.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
+      await tester.pumpAndSettle();
+
+      final pastedEndpointFinder = find.descendant(
+        of: find.byType(EndpointNodeWidget),
+        matching: find.text('Main Lighting Console (Copy)'),
+      );
+      expect(pastedEndpointFinder, findsOneWidget);
+
+      await tester.tap(
+        pastedEndpointFinder,
+        buttons: kSecondaryMouseButton,
+      );
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Delete Main Lighting Console (Copy)'));
+      await tester.pumpAndSettle();
+      expect(pastedEndpointFinder, findsNothing);
+    },
+  );
 }

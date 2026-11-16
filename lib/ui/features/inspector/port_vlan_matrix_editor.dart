@@ -137,13 +137,16 @@ class _PortVlanMatrixEditorState extends State<PortVlanMatrixEditor> {
         children: [
           Row(
             children: [
-              Text(
-                'Port ${port.portNumber} (${port.mediaSpeedLabel})',
-                style: TextStyle(
-                  fontFamily: 'monospace',
-                  fontSize: 12,
-                  fontWeight: FontWeight.bold,
-                  color: AppTheme.textPrimary,
+              Flexible(
+                child: Text(
+                  'Port ${port.portNumber} (${port.mediaSpeedLabel})',
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    fontFamily: 'monospace',
+                    fontSize: 12,
+                    fontWeight: FontWeight.bold,
+                    color: AppTheme.textPrimary,
+                  ),
                 ),
               ),
               const SizedBox(width: 6),

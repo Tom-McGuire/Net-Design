@@ -1,3 +1,4 @@
+import 'package:flutter/services.dart';
 import 'package:material_ui/material_ui.dart';
 import 'package:provider/provider.dart';
 
@@ -22,7 +23,52 @@ class SandboxScreen extends StatefulWidget {
 }
 
 class _SandboxScreenState extends State<SandboxScreen> {
+  final FocusNode _shortcutFocusNode =
+      FocusNode(debugLabel: 'SandboxShortcutFocus');
   bool _hasShownAdvisory = false;
+
+  @override
+  void dispose() {
+    _shortcutFocusNode.dispose();
+    super.dispose();
+  }
+
+  KeyEventResult _handleKeyEvent(FocusNode node, KeyEvent event) {
+    if (event is! KeyDownEvent) return KeyEventResult.ignored;
+
+    final primaryCtx = FocusManager.instance.primaryFocus?.context;
+    final isEditingText = primaryCtx != null &&
+        (primaryCtx.widget is EditableText ||
+            primaryCtx.findAncestorWidgetOfExactType<EditableText>() != null);
+    if (isEditingText) return KeyEventResult.ignored;
+
+    final vm = context.read<SandboxViewModel>();
+    final isModifier = HardwareKeyboard.instance.isControlPressed ||
+        HardwareKeyboard.instance.isMetaPressed;
+
+    if (isModifier && event.logicalKey == LogicalKeyboardKey.keyC) {
+      return vm.copySelectedNode()
+          ? KeyEventResult.handled
+          : KeyEventResult.ignored;
+    }
+
+    if (isModifier && event.logicalKey == LogicalKeyboardKey.keyV) {
+      if (vm.hasCopiedDevice) {
+        vm.pasteCopiedNode();
+        return KeyEventResult.handled;
+      }
+      return KeyEventResult.ignored;
+    }
+
+    if (event.logicalKey == LogicalKeyboardKey.delete ||
+        event.logicalKey == LogicalKeyboardKey.backspace) {
+      return vm.deleteSelectedItem()
+          ? KeyEventResult.handled
+          : KeyEventResult.ignored;
+    }
+
+    return KeyEventResult.ignored;
+  }
 
   @override
   void initState() {
@@ -42,21 +88,26 @@ class _SandboxScreenState extends State<SandboxScreen> {
     // recreating _SandboxScreenState or re-opening the startup advisory popup.
     context.watch<SandboxViewModel>();
 
-    return Scaffold(
-      body: Column(
-        children: [
-          const TopControlBar(),
-          Expanded(
-            child: Row(
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                const Expanded(child: DesignCanvas()),
-                const NodeInspectorPanel(),
-              ],
+    return Focus(
+      focusNode: _shortcutFocusNode,
+      autofocus: true,
+      onKeyEvent: _handleKeyEvent,
+      child: Scaffold(
+        body: Column(
+          children: [
+            const TopControlBar(),
+            Expanded(
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  const Expanded(child: DesignCanvas()),
+                  const NodeInspectorPanel(),
+                ],
+              ),
             ),
-          ),
-          const IssuesDrawerPanel(),
-        ],
+            const IssuesDrawerPanel(),
+          ],
+        ),
       ),
     );
   }

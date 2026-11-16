@@ -4,6 +4,7 @@ import 'package:file_picker/file_picker.dart';
 import 'package:material_ui/material_ui.dart';
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 import '../features/library/library_drawer.dart';
 import '../features/sandbox_view_model.dart';
@@ -340,6 +341,13 @@ class TopControlBar extends StatelessWidget {
             icon: Icon(Icons.info_outline, size: 18, color: AppTheme.warning),
           ),
 
+          // User Manual (opens PDF in browser)
+          IconButton(
+            tooltip: 'User Manual (PDF)',
+            onPressed: () => _openUserManual(context),
+            icon: Icon(Icons.help_outline, size: 18, color: AppTheme.textSecondary),
+          ),
+
           // Project Save / Load / Export Menu
           PopupMenuButton<String>(
             tooltip: 'Project File & Export',
@@ -369,6 +377,11 @@ class TopControlBar extends StatelessWidget {
                 value: 'copy_report',
                 child: _menuRow(Icons.assignment_outlined, 'Copy Validation Report (MD)'),
               ),
+              const PopupMenuDivider(),
+              PopupMenuItem(
+                value: 'user_manual',
+                child: _menuRow(Icons.help_outline, 'User Manual (PDF)'),
+              ),
             ],
           ),
                     ],
@@ -397,12 +410,32 @@ class TopControlBar extends StatelessWidget {
     );
   }
 
+  static final Uri _userManualUri = Uri.parse(
+    'https://github.com/Tom-McGuire/Net-Design/blob/main/USER_MANUAL.pdf',
+  );
+
+  Future<void> _openUserManual(BuildContext context) async {
+    final ok = await launchUrl(
+      _userManualUri,
+      mode: LaunchMode.externalApplication,
+    );
+    if (!ok && context.mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Could not open $_userManualUri in browser.'),
+        ),
+      );
+    }
+  }
+
   Future<void> _handleFileAction(
     BuildContext context,
     SandboxViewModel vm,
     String action,
   ) async {
     switch (action) {
+      case 'user_manual':
+        await _openUserManual(context);
       case 'new_blank':
         vm.newBlankProject();
       case 'open':

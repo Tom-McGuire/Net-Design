@@ -5,6 +5,7 @@ import '../../theme/app_theme.dart';
 import '../sandbox_view_model.dart';
 import 'endpoint_node_widget.dart';
 import 'link_edge_painter.dart';
+import 'node_context_menu.dart';
 import 'switch_node_widget.dart';
 
 /// Interactive topology canvas supporting node dragging, port wiring, zoom/pan,
@@ -23,6 +24,7 @@ class _DesignCanvasState extends State<DesignCanvas> {
   final TransformationController _transformController =
       TransformationController();
   double _canvasScale = 1.0;
+  Size _viewportSize = Size.zero;
 
   @override
   void initState() {
@@ -31,6 +33,9 @@ class _DesignCanvasState extends State<DesignCanvas> {
   }
 
   void _onTransformChanged() {
+    if (mounted) {
+      _syncViewportCenter(context.read<SandboxViewModel>());
+    }
     final raw = _transformController.value.getMaxScaleOnAxis();
     final next = raw > 0 ? raw : 1.0;
     if ((next - _canvasScale).abs() > 0.001) {
@@ -38,6 +43,17 @@ class _DesignCanvasState extends State<DesignCanvas> {
         _canvasScale = next;
       });
     }
+  }
+
+  void _syncViewportCenter(SandboxViewModel vm) {
+    if (_viewportSize.isEmpty) return;
+    final inverted = Matrix4.tryInvert(_transformController.value);
+    if (inverted == null) return;
+    final centerWorld = MatrixUtils.transformPoint(
+      inverted,
+      Offset(_viewportSize.width / 2, _viewportSize.height / 2),
+    );
+    vm.updateViewportCenter(centerWorld);
   }
 
   @override
@@ -96,6 +112,8 @@ class _DesignCanvasState extends State<DesignCanvas> {
 
     return LayoutBuilder(
       builder: (context, constraints) {
+        _viewportSize = constraints.biggest;
+        _syncViewportCenter(vm);
         final focusReq = vm.canvasCenterRequest;
         if (focusReq != null) {
           WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -122,6 +140,7 @@ class _DesignCanvasState extends State<DesignCanvas> {
                 child: GestureDetector(
                   behavior: HitTestBehavior.translucent,
                   onTapUp: (details) {
+                    Focus.maybeOf(context)?.requestFocus();
                     final hitLinkId =
                         _hitTestLink(details.localPosition, geometries);
                     if (hitLinkId != null) {
@@ -129,6 +148,15 @@ class _DesignCanvasState extends State<DesignCanvas> {
                     } else {
                       vm.clearSelection();
                     }
+                  },
+                  onSecondaryTapUp: (details) {
+                    Focus.maybeOf(context)?.requestFocus();
+                    showCanvasContextMenu(
+                      context: context,
+                      globalPosition: details.globalPosition,
+                      localWorldPosition: details.localPosition,
+                      vm: vm,
+                    );
                   },
                   child: Container(
                     width: _canvasWidth,
