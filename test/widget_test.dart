@@ -338,4 +338,42 @@ void main() {
       expect(find.text('02:10:00:00:00:01'), findsWidgets);
     },
   );
+
+  test(
+    'Template edits do not auto-update placed devices until Update Plan is triggered',
+    () async {
+      final vm = SandboxViewModel();
+      vm.newBlankProject();
+
+      // Find an edge switch template with supportsIgmpQuerier == false (or toggle it)
+      final baseTpl = vm.switchTemplates.first;
+      final disabledQuerierTpl = baseTpl.copyWith(supportsIgmpQuerier: false);
+      await vm.saveSwitchTemplate(disabledQuerierTpl);
+
+      final placed = vm.addSwitchFromTemplate(disabledQuerierTpl, dx: 300, dy: 200);
+      final originalMac = placed.macAddress;
+      expect(placed.supportsIgmpQuerier, isFalse);
+
+      // Edit template to enable IGMP Querier
+      final enabledQuerierTpl =
+          disabledQuerierTpl.copyWith(supportsIgmpQuerier: true);
+      await vm.saveSwitchTemplate(enabledQuerierTpl);
+
+      // Placed switch must NOT auto-update
+      final beforeSync =
+          vm.project.switches.firstWhere((s) => s.id == placed.id);
+      expect(beforeSync.supportsIgmpQuerier, isFalse);
+
+      // Explicit sync updates placed switch while preserving identity & position
+      final updatedCount = vm.applySwitchTemplateToPlan(enabledQuerierTpl);
+      expect(updatedCount, 1);
+
+      final afterSync =
+          vm.project.switches.firstWhere((s) => s.id == placed.id);
+      expect(afterSync.supportsIgmpQuerier, isTrue);
+      expect(afterSync.macAddress, originalMac);
+      expect(afterSync.dx, 300);
+      expect(afterSync.dy, 200);
+    },
+  );
 }

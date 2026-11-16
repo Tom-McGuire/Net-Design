@@ -187,6 +187,9 @@ class LibraryDrawer extends StatelessWidget {
             separatorBuilder: (_, _) => const SizedBox(height: 6),
             itemBuilder: (context, index) {
               final tpl = vm.switchTemplates[index];
+              final onPlanCount = vm.project.switches
+                  .where((s) => s.templateId == tpl.id)
+                  .length;
               return Container(
                 padding: const EdgeInsets.all(10),
                 decoration: BoxDecoration(
@@ -226,6 +229,42 @@ class LibraryDrawer extends StatelessWidget {
                         ],
                       ),
                     ),
+                    if (onPlanCount > 0) ...[
+                      Tooltip(
+                        message:
+                            'Update $onPlanCount switch${onPlanCount == 1 ? '' : 'es'} on plan from this template',
+                        child: OutlinedButton.icon(
+                          onPressed: () {
+                            final updated = vm.applySwitchTemplateToPlan(tpl);
+                            if (updated > 0 && context.mounted) {
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                SnackBar(
+                                  content: Text(
+                                    'Updated $updated switch${updated == 1 ? '' : 'es'} on plan from "${tpl.name}".',
+                                  ),
+                                ),
+                              );
+                            }
+                          },
+                          style: OutlinedButton.styleFrom(
+                            foregroundColor: AppTheme.accent,
+                            side: BorderSide(
+                              color: AppTheme.accent.withValues(alpha: 0.6),
+                            ),
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 8,
+                              vertical: 6,
+                            ),
+                          ),
+                          icon: const Icon(Icons.sync, size: 14),
+                          label: Text(
+                            'Update Plan ($onPlanCount)',
+                            style: const TextStyle(fontSize: 11),
+                          ),
+                        ),
+                      ),
+                      const SizedBox(width: 6),
+                    ],
                     FilledButton(
                       onPressed: () {
                         vm.addSwitchFromTemplate(tpl);
@@ -306,6 +345,9 @@ class LibraryDrawer extends StatelessWidget {
             separatorBuilder: (_, _) => const SizedBox(height: 6),
             itemBuilder: (context, index) {
               final tpl = vm.endpointTemplates[index];
+              final onPlanCount = vm.project.endpoints
+                  .where((e) => e.templateId == tpl.id)
+                  .length;
               final flowsText = tpl.trafficProfiles
                   .map((f) => f.displayPill)
                   .join(' | ');
@@ -345,6 +387,42 @@ class LibraryDrawer extends StatelessWidget {
                         ],
                       ),
                     ),
+                    if (onPlanCount > 0) ...[
+                      Tooltip(
+                        message:
+                            'Update $onPlanCount endpoint${onPlanCount == 1 ? '' : 's'} on plan from this template',
+                        child: OutlinedButton.icon(
+                          onPressed: () {
+                            final updated = vm.applyEndpointTemplateToPlan(tpl);
+                            if (updated > 0 && context.mounted) {
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                SnackBar(
+                                  content: Text(
+                                    'Updated $updated endpoint${updated == 1 ? '' : 's'} on plan from "${tpl.name}".',
+                                  ),
+                                ),
+                              );
+                            }
+                          },
+                          style: OutlinedButton.styleFrom(
+                            foregroundColor: AppTheme.accent,
+                            side: BorderSide(
+                              color: AppTheme.accent.withValues(alpha: 0.6),
+                            ),
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 8,
+                              vertical: 6,
+                            ),
+                          ),
+                          icon: const Icon(Icons.sync, size: 14),
+                          label: Text(
+                            'Update Plan ($onPlanCount)',
+                            style: const TextStyle(fontSize: 11),
+                          ),
+                        ),
+                      ),
+                      const SizedBox(width: 6),
+                    ],
                     FilledButton(
                       onPressed: () {
                         vm.addEndpointFromTemplate(tpl);

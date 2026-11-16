@@ -162,6 +162,9 @@ class _NodeInspectorPanelState extends State<NodeInspectorPanel> {
     _syncForSwitch(sw);
     final priorities = [for (var p = 0; p <= 61440; p += 4096) p];
     final sortedVlanIds = sw.vlanConfigs.keys.toList()..sort();
+    final matchingTpl = vm.switchTemplates
+        .where((t) => t.id == sw.templateId)
+        .firstOrNull;
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -181,7 +184,16 @@ class _NodeInspectorPanelState extends State<NodeInspectorPanel> {
                 },
               ),
             ),
-            const SizedBox(width: 6),
+            if (matchingTpl != null) ...[
+              const SizedBox(width: 4),
+              IconButton(
+                tooltip: 'Update from Library Template (${matchingTpl.name})',
+                onPressed: () =>
+                    vm.applySwitchTemplateToPlan(matchingTpl, onlySwitchId: sw.id),
+                icon: Icon(Icons.sync, size: 18, color: AppTheme.accent),
+              ),
+            ],
+            const SizedBox(width: 2),
             IconButton(
               tooltip: 'Remove Switch',
               onPressed: () => vm.removeNode(sw.id),
@@ -558,6 +570,10 @@ class _NodeInspectorPanelState extends State<NodeInspectorPanel> {
       links: vm.project.links,
     );
 
+    final matchingTpl = vm.endpointTemplates
+        .where((t) => t.id == ep.templateId)
+        .firstOrNull;
+
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -575,7 +591,18 @@ class _NodeInspectorPanelState extends State<NodeInspectorPanel> {
                 },
               ),
             ),
-            const SizedBox(width: 6),
+            if (matchingTpl != null) ...[
+              const SizedBox(width: 4),
+              IconButton(
+                tooltip: 'Update from Library Template (${matchingTpl.name})',
+                onPressed: () => vm.applyEndpointTemplateToPlan(
+                  matchingTpl,
+                  onlyEndpointId: ep.id,
+                ),
+                icon: Icon(Icons.sync, size: 18, color: AppTheme.accent),
+              ),
+            ],
+            const SizedBox(width: 2),
             IconButton(
               tooltip: 'Remove Endpoint',
               onPressed: () => vm.removeNode(ep.id),

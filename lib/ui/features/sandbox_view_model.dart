@@ -1042,6 +1042,149 @@ class SandboxViewModel extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// Applies [template] hardware/capability settings to matching switches on
+  /// the current plan (or a single switch when [onlySwitchId] is provided),
+  /// preserving user labels, MACs, coordinates, VLAN port mappings, and links.
+  int applySwitchTemplateToPlan(
+    SwitchTemplate template, {
+    String? onlySwitchId,
+  }) {
+    var updatedCount = 0;
+    final templatePorts = template.generateDefaultPorts();
+    final validPortNums = {for (final p in templatePorts) p.portNumber};
+
+    for (var i = 0; i < _project.switches.length; i++) {
+      final sw = _project.switches[i];
+      if (onlySwitchId != null) {
+        if (sw.id != onlySwitchId) continue;
+      } else if (sw.templateId != template.id) {
+        continue;
+      }
+
+      final mergedPorts = <SwitchPortConfig>[
+        for (final tplPort in templatePorts)
+          () {
+            final old = sw.portByNumber(tplPort.portNumber);
+            if (old == null) return tplPort;
+            return SwitchPortConfig(
+              portNumber: tplPort.portNumber,
+              customLabel: old.customLabel,
+              mediaType: tplPort.mediaType,
+              maxSpeed: tplPort.maxSpeed,
+              poeCapable: tplPort.poeCapable,
+              poeEnabled: tplPort.poeCapable ? old.poeEnabled : false,
+              portMode: old.portMode,
+              nativeVlan: old.nativeVlan,
+              allowedVlans: Set<int>.from(old.allowedVlans),
+              lagGroupId: old.lagGroupId,
+            );
+          }(),
+      ];
+
+      final nextVlans = <int, SwitchVlanSettings>{
+        for (final entry in sw.vlanConfigs.entries)
+          entry.key: entry.value.copyWith(
+            igmpSnoopingEnabled: template.supportsIgmpSnooping
+                ? entry.value.igmpSnoopingEnabled
+                : false,
+            igmpQuerierEnabled: template.supportsIgmpQuerier
+                ? entry.value.igmpQuerierEnabled
+                : false,
+          ),
+      };
+
+      final nextStpMode = !template.supportsStp
+          ? StpMode.disabled
+          : (sw.stpMode == StpMode.disabled && !sw.supportsStp
+              ? StpMode.rstp
+              : sw.stpMode);
+
+      _project.switches[i] = sw.copyWith(
+        stpMode: nextStpMode,
+        poeBudgetWatts: template.poeBudgetWatts,
+        supportsStp: template.supportsStp,
+        supportsVlans: template.supportsVlans,
+        supportsIgmpSnooping: template.supportsIgmpSnooping,
+        supportsIgmpQuerier: template.supportsIgmpQuerier,
+        vlanConfigs: nextVlans,
+        ports: mergedPorts,
+      );
+
+      _project.links.removeWhere(
+        (l) =>
+            (l.sourceNodeId == sw.id &&
+                !validPortNums.contains(l.sourcePortNumber)) ||
+            (l.targetNodeId == sw.id &&
+                !validPortNums.contains(l.targetPortNumber)),
+      );
+      updatedCount++;
+    }
+
+    if (updatedCount > 0) {
+      _revalidate();
+      _lastStatusMessage =
+          'Updated $updatedCount switch${updatedCount == 1 ? '' : 'es'} on plan from "${template.name}".';
+      notifyListeners();
+    }
+    return updatedCount;
+  }
+
+  /// Applies [template] interface and traffic-profile settings to matching
+  /// endpoints on the current plan (or a single endpoint when [onlyEndpointId]
+  /// is provided), preserving user labels, IPs, coordinates, and valid links.
+  int applyEndpointTemplateToPlan(
+    EndpointTemplate template, {
+    String? onlyEndpointId,
+  }) {
+    var updatedCount = 0;
+    final templatePorts = template.effectivePorts;
+    final validPortNums = {for (final p in templatePorts) p.portNumber};
+
+    for (var i = 0; i < _project.endpoints.length; i++) {
+      final ep = _project.endpoints[i];
+      if (onlyEndpointId != null) {
+        if (ep.id != onlyEndpointId) continue;
+      } else if (ep.templateId != template.id) {
+        continue;
+      }
+
+      final nextFlows = template.trafficProfiles
+          .map((f) => f.copyWith(id: 'flow-${_uuid.v4().substring(0, 6)}'))
+          .toList();
+      for (final f in nextFlows) {
+        _project.knownVlans.putIfAbsent(
+          f.defaultVlanId,
+          () => 'VLAN ${f.defaultVlanId}',
+        );
+      }
+
+      _project.endpoints[i] = ep.copyWith(
+        category: template.category,
+        nicSpeed: template.nicSpeed,
+        ports: List<EndpointPortConfig>.from(templatePorts),
+        activeTrafficFlows: nextFlows,
+        poeDrawWatts: template.poeDrawWatts,
+      );
+
+      _project.links.removeWhere(
+        (l) =>
+            (l.sourceNodeId == ep.id &&
+                !validPortNums.contains(l.sourcePortNumber)) ||
+            (l.targetNodeId == ep.id &&
+                !validPortNums.contains(l.targetPortNumber)),
+      );
+      updatedCount++;
+    }
+
+    if (updatedCount > 0) {
+      _revalidate();
+      _lastStatusMessage =
+          'Updated $updatedCount endpoint${updatedCount == 1 ? '' : 's'} on plan from "${template.name}".';
+      notifyListeners();
+    }
+    return updatedCount;
+  }
+
   String exportLibraryJson() {
     return _libraryStorage.exportLibraryJson(
       TemplateLibraryBundle(
