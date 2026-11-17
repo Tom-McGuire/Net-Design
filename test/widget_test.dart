@@ -6,6 +6,7 @@ import 'package:net_design/data/services/device_templates.dart';
 import 'package:net_design/data/services/project_storage_service.dart';
 import 'package:net_design/data/services/suite_theme_service.dart';
 import 'package:net_design/domain/engine/topology_validator.dart';
+import 'package:net_design/domain/models/enums.dart';
 import 'package:net_design/main.dart';
 import 'package:net_design/ui/features/canvas/endpoint_node_widget.dart';
 import 'package:net_design/ui/features/canvas/switch_node_widget.dart';
@@ -93,11 +94,11 @@ void main() {
         findsOneWidget,
       );
       expect(
-        find.descendant(of: topBar, matching: find.text('VLAN 1')),
+        find.descendant(of: topBar, matching: find.text('Default / Mgmt (1)')),
         findsOneWidget,
       );
       expect(
-        find.descendant(of: topBar, matching: find.text('VLAN 20')),
+        find.descendant(of: topBar, matching: find.text('sACN / Lighting (20)')),
         findsOneWidget,
       );
       expect(
@@ -148,15 +149,15 @@ void main() {
         findsOneWidget,
       );
       expect(
-        find.descendant(of: topBar, matching: find.text('VLAN 1')),
+        find.descendant(of: topBar, matching: find.text('Default / Mgmt (1)')),
         findsOneWidget,
       );
       expect(
-        find.descendant(of: topBar, matching: find.text('VLAN 20')),
+        find.descendant(of: topBar, matching: find.text('sACN / Lighting (20)')),
         findsNothing,
       );
       expect(
-        find.descendant(of: topBar, matching: find.text('VLAN 30')),
+        find.descendant(of: topBar, matching: find.text('Dante / Audio (30)')),
         findsNothing,
       );
       expect(
@@ -175,6 +176,8 @@ void main() {
     // Add custom VLAN 50 and verify serialization preserves filter VLANs
     vm.addKnownVlan(50, 'Stage Comms');
     expect(vm.availableVlanIds, [1, 50]);
+    expect(vm.formatVlanDisplay(50), 'Stage Comms (50)');
+    expect(vm.formatVlanDisplay(1), 'Default / Mgmt (1)');
     final raw = storage.serializeProject(vm.project);
     final loaded = storage.deserializeProject(raw);
     expect(loaded.knownVlans.keys.toList()..sort(), [1, 50]);
@@ -374,6 +377,73 @@ void main() {
       expect(afterSync.macAddress, originalMac);
       expect(afterSync.dx, 300);
       expect(afterSync.dy, 200);
+    },
+  );
+
+  test('Wiring cannot connect a device back to another port on itself', () {
+    final vm = SandboxViewModel();
+    vm.newBlankProject();
+    final mediaTpl = vm.endpointTemplates.firstWhere(
+      (t) => t.effectivePorts.length > 1,
+    );
+    final ep = vm.addEndpointFromTemplate(mediaTpl);
+
+    vm.startWiringFromPort(ep.id, 1);
+    expect(vm.canCompleteWiringToPort(ep.id, 2), isFalse);
+    expect(vm.completeWiringToPort(ep.id, 2), isFalse);
+    expect(vm.project.links, isEmpty);
+  });
+
+  test(
+    'Trace Stream All VLAN Streams respects STP and IGMP Querier location',
+    () {
+      final vm = SandboxViewModel(
+        initialProject: DeviceTemplates.healthyReferenceRingDemo(),
+      );
+
+      // Remove Stage Right sACN Node so VLAN 20 only has endpoints on Core A and Stage Left Rack B.
+      vm.removeNode('ep-node-r');
+
+      vm.setActiveStreamTrace('vlan:20');
+      expect(vm.activeStreamTraceTarget?.label, 'All VLAN 20 Streams');
+
+      final coreLeft =
+          vm.project.links.firstWhere((l) => l.id == 'lnk-core-left');
+      final coreRight =
+          vm.project.links.firstWhere((l) => l.id == 'lnk-core-right');
+      final leftRight =
+          vm.project.links.firstWhere((l) => l.id == 'lnk-left-right');
+
+      // Core A is IGMP Querier and STP Root: traffic delivers to Stage Left and is IGMP-pruned toward Stage Right.
+      expect(coreLeft.streamTraceState, LinkStreamTraceState.delivered);
+      expect(coreRight.streamTraceState, LinkStreamTraceState.igmpPruned);
+      expect(leftRight.streamTraceState, LinkStreamTraceState.none);
+
+      // Move IGMP Querier for VLAN 20 from Core A to Stage Right Rack C.
+      final core =
+          vm.project.switches.firstWhere((s) => s.id == 'sw-core-foh');
+      final right =
+          vm.project.switches.firstWhere((s) => s.id == 'sw-stage-right');
+      vm.updateSwitch(
+        core.copyWith(
+          vlanConfigs: {
+            ...core.vlanConfigs,
+            20: core.vlanConfigs[20]!.copyWith(igmpQuerierEnabled: false),
+          },
+        ),
+      );
+      vm.updateSwitch(
+        right.copyWith(
+          vlanConfigs: {
+            ...right.vlanConfigs,
+            20: right.vlanConfigs[20]!.copyWith(igmpQuerierEnabled: true),
+          },
+        ),
+      );
+
+      // Now Core A -> Stage Right carries mrouter traffic to the Querier while STP-blocked link stays none.
+      expect(coreRight.streamTraceState, LinkStreamTraceState.delivered);
+      expect(leftRight.streamTraceState, LinkStreamTraceState.none);
     },
   );
 }

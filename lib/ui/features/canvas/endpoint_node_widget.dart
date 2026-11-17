@@ -234,9 +234,15 @@ class _EndpointNodeWidgetState extends State<EndpointNodeWidget> {
                           color: isFullyConnected
                               ? AppTheme.textMuted
                               : (vm.pendingWireSource != null
-                                  ? (compatibleFreePort != null
+                                  ? (compatibleFreePort != null &&
+                                          vm.canCompleteWiringToPort(
+                                            endpointNode.id,
+                                            compatibleFreePort,
+                                          )
                                       ? AppTheme.success
-                                      : AppTheme.error)
+                                      : (isPendingSource
+                                          ? AppTheme.warning
+                                          : AppTheme.error))
                                   : AppTheme.accent),
                         ),
                       ),

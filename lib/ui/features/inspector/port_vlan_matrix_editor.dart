@@ -321,7 +321,10 @@ class _PortVlanMatrixEditorState extends State<PortVlanMatrixEditor> {
                         .map(
                           (v) => DropdownMenuItem(
                             value: v,
-                            child: Text('VLAN $v'),
+                            child: Text(
+                              vm.formatVlanDisplay(v),
+                              overflow: TextOverflow.ellipsis,
+                            ),
                           ),
                         )
                         .toList(),
@@ -362,7 +365,7 @@ class _PortVlanMatrixEditorState extends State<PortVlanMatrixEditor> {
                       selectedColor: AppTheme.success.withValues(alpha: 0.25),
                       checkmarkColor: AppTheme.success,
                       label: Text(
-                        'V$v',
+                        vm.formatVlanDisplay(v),
                         style: TextStyle(
                           fontFamily: 'monospace',
                           fontSize: 10.5,

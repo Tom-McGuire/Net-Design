@@ -782,9 +782,11 @@ class _NodeInspectorPanelState extends State<NodeInspectorPanel> {
     final effectivePorts = ep.effectivePorts;
     final isSfp = port.mediaType == PortMediaType.sfpFibre;
     final link = vm.linkForPort(ep.id, port.portNumber);
-    final canCompleteWire = vm.pendingWireSource != null &&
-        link == null &&
-        vm.isPortMediaCompatibleWithPendingWire(ep.id, port.portNumber);
+    final isPendingThisNic = vm.pendingWireSource?.nodeId == ep.id &&
+        vm.pendingWireSource?.portNumber == port.portNumber;
+    final canCompleteWire =
+        vm.canCompleteWiringToPort(ep.id, port.portNumber);
+    final hasOtherPendingWire = vm.pendingWireSource != null && !canCompleteWire;
 
     return Container(
       padding: const EdgeInsets.all(8),
@@ -841,17 +843,37 @@ class _NodeInspectorPanelState extends State<NodeInspectorPanel> {
                   icon: const Icon(Icons.link_off, size: 12),
                   label: const Text('Unplug', style: TextStyle(fontSize: 10.5)),
                 )
+              else if (isPendingThisNic)
+                OutlinedButton.icon(
+                  onPressed: vm.cancelWiring,
+                  style: OutlinedButton.styleFrom(
+                    foregroundColor: AppTheme.warning,
+                    side: BorderSide(
+                      color: AppTheme.warning.withValues(alpha: 0.6),
+                    ),
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 8,
+                      vertical: 3,
+                    ),
+                  ),
+                  icon: const Icon(Icons.close, size: 12),
+                  label: const Text('Cancel', style: TextStyle(fontSize: 10.5)),
+                )
               else
                 FilledButton.icon(
-                  onPressed: () {
-                    if (vm.pendingWireSource != null) {
-                      vm.completeWiringToPort(ep.id, port.portNumber);
-                    } else {
-                      vm.startWiringFromPort(ep.id, port.portNumber);
-                    }
-                  },
+                  onPressed: hasOtherPendingWire
+                      ? null
+                      : () {
+                          if (canCompleteWire) {
+                            vm.completeWiringToPort(ep.id, port.portNumber);
+                          } else {
+                            vm.startWiringFromPort(ep.id, port.portNumber);
+                          }
+                        },
                   style: FilledButton.styleFrom(
-                    backgroundColor: AppTheme.accent,
+                    backgroundColor: canCompleteWire
+                        ? AppTheme.success
+                        : AppTheme.accent,
                     foregroundColor: Colors.white,
                     padding: const EdgeInsets.symmetric(
                       horizontal: 8,
@@ -873,7 +895,7 @@ class _NodeInspectorPanelState extends State<NodeInspectorPanel> {
                 ),
             ],
           ),
-          const SizedBox(height: 6),
+          const SizedBox(height: 10),
           TextFormField(
             key: ValueKey('ep-nic-lbl-${ep.id}-${port.portNumber}'),
             initialValue: port.label ?? '',
@@ -888,7 +910,7 @@ class _NodeInspectorPanelState extends State<NodeInspectorPanel> {
               vm.updateEndpoint(ep.copyWith(ports: next));
             },
           ),
-          const SizedBox(height: 6),
+          const SizedBox(height: 10),
           Row(
             children: [
               Expanded(
@@ -1556,6 +1578,7 @@ class _TrafficFlowInspectorCardState extends State<_TrafficFlowInspectorCard> {
           Row(
             children: [
               Expanded(
+                flex: 2,
                 child: DropdownButtonFormField<TrafficDirection>(
                   key: ValueKey('flow-dir-${ep.id}-${flow.id}-${flow.direction.name}'),
                   initialValue: flow.direction,
@@ -1564,7 +1587,15 @@ class _TrafficFlowInspectorCardState extends State<_TrafficFlowInspectorCard> {
                   dropdownColor: AppTheme.surfaceElevated,
                   style: TextStyle(fontSize: 11, color: AppTheme.textPrimary),
                   items: TrafficDirection.values
-                      .map((d) => DropdownMenuItem(value: d, child: Text(d.label)))
+                      .map(
+                        (d) => DropdownMenuItem(
+                          value: d,
+                          child: Text(
+                            d.label,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ),
+                      )
                       .toList(),
                   onChanged: (dir) {
                     if (dir != null) {
@@ -1574,8 +1605,8 @@ class _TrafficFlowInspectorCardState extends State<_TrafficFlowInspectorCard> {
                 ),
               ),
               const SizedBox(width: 6),
-              SizedBox(
-                width: 84,
+              Expanded(
+                flex: 3,
                 child: DropdownButtonFormField<int>(
                   key: ValueKey('flow-vlan-${ep.id}-${flow.id}-${flow.defaultVlanId}'),
                   initialValue: vm.availableVlanIds.contains(flow.defaultVlanId)
@@ -1590,7 +1621,15 @@ class _TrafficFlowInspectorCardState extends State<_TrafficFlowInspectorCard> {
                     color: AppTheme.textPrimary,
                   ),
                   items: vm.availableVlanIds
-                      .map((v) => DropdownMenuItem(value: v, child: Text('V$v')))
+                      .map(
+                        (v) => DropdownMenuItem(
+                          value: v,
+                          child: Text(
+                            vm.formatVlanDisplay(v),
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ),
+                      )
                       .toList(),
                   onChanged: (v) {
                     if (v != null) {

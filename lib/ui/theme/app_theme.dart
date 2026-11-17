@@ -65,7 +65,7 @@ class AppTheme {
         isDense: true,
         filled: true,
         fillColor: inputBg,
-        contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+        contentPadding: const EdgeInsets.fromLTRB(12, 14, 12, 10),
         border: OutlineInputBorder(borderRadius: BorderRadius.circular(6), borderSide: BorderSide(color: borderCol)),
         enabledBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(6), borderSide: BorderSide(color: borderCol)),
         focusedBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(6), borderSide: BorderSide(color: brand, width: 1.5)),

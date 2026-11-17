@@ -113,6 +113,10 @@ class TopControlBar extends StatelessWidget {
           PopupMenuButton<String>(
             tooltip: 'Add Switch from Template Library',
             color: AppTheme.surfaceElevated,
+            constraints: BoxConstraints(
+              minWidth: 240,
+              maxWidth: (MediaQuery.sizeOf(context).width - 48).clamp(320.0, 720.0),
+            ),
             onSelected: (tplId) {
               final tpl = vm.switchTemplates
                   .where((t) => t.id == tplId)
@@ -124,6 +128,7 @@ class TopControlBar extends StatelessWidget {
                   (t) => PopupMenuItem<String>(
                     value: t.id,
                     child: Column(
+                      mainAxisSize: MainAxisSize.min,
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                         Text(
@@ -159,6 +164,10 @@ class TopControlBar extends StatelessWidget {
           PopupMenuButton<String>(
             tooltip: 'Add Endpoint from Template Library',
             color: AppTheme.surfaceElevated,
+            constraints: BoxConstraints(
+              minWidth: 240,
+              maxWidth: (MediaQuery.sizeOf(context).width - 48).clamp(320.0, 720.0),
+            ),
             onSelected: (tplId) {
               final tpl = vm.endpointTemplates
                   .where((t) => t.id == tplId)
@@ -170,29 +179,33 @@ class TopControlBar extends StatelessWidget {
                   (t) => PopupMenuItem<String>(
                     value: t.id,
                     child: Row(
+                      mainAxisSize: MainAxisSize.min,
                       children: [
                         Icon(t.category.icon, size: 16, color: AppTheme.accent),
                         const SizedBox(width: 8),
-                        Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text(
-                              t.name,
-                              style: TextStyle(
-                                fontSize: 12,
-                                fontWeight: FontWeight.w600,
-                                color: AppTheme.textPrimary,
+                        Flexible(
+                          child: Column(
+                            mainAxisSize: MainAxisSize.min,
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                t.name,
+                                style: TextStyle(
+                                  fontSize: 12,
+                                  fontWeight: FontWeight.w600,
+                                  color: AppTheme.textPrimary,
+                                ),
                               ),
-                            ),
-                            Text(
-                              '${t.portsSummaryString}${t.totalPoeDrawWatts > 0 ? " • ${t.totalPoeDrawWatts.toStringAsFixed(1)}W PoE" : ""}',
-                              style: TextStyle(
-                                fontSize: 10,
-                                fontFamily: 'monospace',
-                                color: AppTheme.textSecondary,
+                              Text(
+                                '${t.portsSummaryString}${t.totalPoeDrawWatts > 0 ? " • ${t.totalPoeDrawWatts.toStringAsFixed(1)}W PoE" : ""}',
+                                style: TextStyle(
+                                  fontSize: 10,
+                                  fontFamily: 'monospace',
+                                  color: AppTheme.textSecondary,
+                                ),
                               ),
-                            ),
-                          ],
+                            ],
+                          ),
                         ),
                       ],
                     ),
@@ -605,8 +618,8 @@ class TopControlBar extends StatelessWidget {
                   const SizedBox(width: 4),
                   for (final vId in vlans) ...[
                     _VlanFilterChip(
-                      label: 'VLAN $vId',
-                      tooltip: vm.project.knownVlans[vId],
+                      label: vm.formatVlanDisplay(vId),
+                      tooltip: 'VLAN $vId',
                       selected: vm.highlightedVlanId == vId,
                       onTap: () => vm.setHighlightedVlan(
                         vm.highlightedVlanId == vId ? null : vId,
@@ -677,6 +690,7 @@ class TopControlBar extends StatelessWidget {
                     : null,
                 isExpanded: true,
                 isDense: true,
+                menuMaxHeight: 420,
                 dropdownColor: AppTheme.surfaceElevated,
                 style: TextStyle(
                   fontFamily: 'monospace',

@@ -407,8 +407,23 @@ class MulticastFlowTracer {
       }
     }
 
-    targets.addAll(individualTargets);
-    return targets;
+    final sortedVlanIds = vlanAllIps.keys.toList()..sort();
+    final vlanBundleTargets = <StreamTraceTarget>[
+      for (final vId in sortedVlanIds)
+        StreamTraceTarget(
+          id: 'vlan:$vId',
+          label: 'All VLAN $vId Streams',
+          vlanId: vId,
+          multicastIps: vlanAllIps[vId]!,
+          protocol: vlanProtocol[vId] ?? TrafficProtocol.sacn,
+        ),
+    ];
+
+    return [
+      ...vlanBundleTargets,
+      ...targets,
+      ...individualTargets,
+    ];
   }
 
   /// Applies static per-link multicast delivery / flooding / IGMP pruning state onto [project.links].

@@ -171,6 +171,18 @@ class SandboxViewModel extends ChangeNotifier {
     return list;
   }
 
+  /// Formats a VLAN for filters and dropdowns as `<Label> (<id>)` when a
+  /// custom label is set, or `VLAN <id>` when no custom label exists.
+  String formatVlanDisplay(int vlanId) {
+    final rawName = _project.knownVlans[vlanId]?.trim();
+    if (rawName == null ||
+        rawName.isEmpty ||
+        rawName.toUpperCase() == 'VLAN $vlanId') {
+      return 'VLAN $vlanId';
+    }
+    return '$rawName ($vlanId)';
+  }
+
   List<ValidationIssue> get filteredIssues {
     return _validation.issues.where((issue) {
       if (_issueCategoryFilter != null &&
@@ -421,14 +433,29 @@ class SandboxViewModel extends ChangeNotifier {
     return targetMedia == pendingMedia;
   }
 
+  /// Returns true when [targetNodeId]:[targetPortNumber] is a valid destination
+  /// for the active pending wire (not the same device, not endpoint-to-endpoint,
+  /// port is free, and physical media matches).
+  bool canCompleteWiringToPort(String targetNodeId, int targetPortNumber) {
+    final source = _pendingWireSource;
+    if (source == null) return false;
+    if (source.nodeId == targetNodeId) return false;
+    if (isPortConnected(targetNodeId, targetPortNumber)) return false;
+    final srcIsEp = _project.endpoints.any((e) => e.id == source.nodeId);
+    final dstIsEp = _project.endpoints.any((e) => e.id == targetNodeId);
+    if (srcIsEp && dstIsEp) return false;
+    return isPortMediaCompatibleWithPendingWire(targetNodeId, targetPortNumber);
+  }
+
   bool completeWiringToPort(String targetNodeId, int targetPortNumber) {
     final source = _pendingWireSource;
     if (source == null) return false;
     _pendingWireSource = null;
 
-    if (source.nodeId == targetNodeId &&
-        source.portNumber == targetPortNumber) {
-      _lastStatusMessage = 'Cannot connect a port to itself.';
+    if (source.nodeId == targetNodeId) {
+      _lastStatusMessage = source.portNumber == targetPortNumber
+          ? 'Cannot connect a port to itself.'
+          : 'Cannot connect a device back to another port on the same device.';
       notifyListeners();
       return false;
     }
