@@ -233,9 +233,25 @@ void main() {
         ),
       );
 
-      expect(result.unprotectedLoopCount, greaterThan(0));
+      expect(result.unprotectedLoopCount, equals(2));
       expect(
         links.any((l) => l.stpState == LinkStpState.loopUnprotected),
+        isTrue,
+      );
+      final loopIssues = result.issues
+          .where((i) => i.id.startsWith('stp-unprotected-loop-'))
+          .toList();
+      expect(loopIssues.length, equals(result.unprotectedLoopCount));
+      expect(
+        loopIssues.any((i) =>
+            i.id == 'stp-unprotected-loop-l-bu' &&
+            i.message.contains('(Managed B P2 <-> Unmanaged Desk P1)')),
+        isTrue,
+      );
+      expect(
+        loopIssues.any((i) =>
+            i.id == 'stp-unprotected-loop-l-ua' &&
+            i.message.contains('(Unmanaged Desk P2 <-> Managed A P2)')),
         isTrue,
       );
       expect(
@@ -245,6 +261,114 @@ void main() {
             i.title.contains('Loop')),
         isTrue,
       );
+    });
+
+    test('tie-breaks parallel equal-cost links by lowest port and blocks higher port on non-root', () {
+      final swRoot = SwitchNodeInstance(
+        id: 'sw-root',
+        templateId: 'tpl-sw',
+        userLabel: 'Root',
+        macAddress: '02:00:00:00:00:01',
+        stpPriority: 4096,
+        ports: buildTrunkPorts(4),
+      );
+      final swEdge = SwitchNodeInstance(
+        id: 'sw-edge',
+        templateId: 'tpl-sw',
+        userLabel: 'Edge',
+        macAddress: '02:00:00:00:00:02',
+        stpPriority: 32768,
+        ports: buildTrunkPorts(4),
+      );
+
+      final linkP2 = NetworkLinkEdge(
+        id: 'l-p2',
+        sourceNodeId: 'sw-root',
+        sourcePortNumber: 2,
+        targetNodeId: 'sw-edge',
+        targetPortNumber: 2,
+      );
+      final linkP1 = NetworkLinkEdge(
+        id: 'l-p1',
+        sourceNodeId: 'sw-root',
+        sourcePortNumber: 1,
+        targetNodeId: 'sw-edge',
+        targetPortNumber: 1,
+      );
+
+      final result = validator.validate(
+        TopologyProject(
+          name: 'Parallel Links',
+          switches: [swRoot, swEdge],
+          links: [linkP2, linkP1],
+        ),
+      );
+
+      expect(result.blockingLinkCount, equals(1));
+      expect(linkP1.stpState, equals(LinkStpState.forwarding));
+      expect(linkP2.stpState, equals(LinkStpState.blocking));
+      expect(linkP2.blockedAtNodeId, equals('sw-edge'));
+      expect(linkP2.blockedAtPortNumber, equals(2));
+    });
+
+    test('propagates hopDepthFromRoot and root-away direction into downstream unmanaged switches', () {
+      final swRoot = SwitchNodeInstance(
+        id: 'sw-root',
+        templateId: 'tpl-sw',
+        userLabel: 'Root',
+        macAddress: '02:00:00:00:00:01',
+        stpPriority: 4096,
+        ports: buildTrunkPorts(4),
+      );
+      final swHop1 = SwitchNodeInstance(
+        id: 'sw-hop1',
+        templateId: 'tpl-sw',
+        userLabel: 'Hop 1',
+        macAddress: '02:00:00:00:00:02',
+        stpPriority: 32768,
+        ports: buildTrunkPorts(4),
+      );
+      final swUnmanaged = SwitchNodeInstance(
+        id: 'sw-unmanaged',
+        templateId: 'tpl-unmanaged',
+        userLabel: 'Unmanaged Ext',
+        macAddress: '02:00:00:00:00:03',
+        stpMode: StpMode.disabled,
+        supportsStp: false,
+        supportsVlans: false,
+        ports: [
+          for (var i = 1; i <= 4; i++) SwitchPortConfig(portNumber: i),
+        ],
+      );
+
+      final linkRootHop1 = NetworkLinkEdge(
+        id: 'l-root-h1',
+        sourceNodeId: 'sw-root',
+        sourcePortNumber: 1,
+        targetNodeId: 'sw-hop1',
+        targetPortNumber: 1,
+      );
+      final linkExt = NetworkLinkEdge(
+        id: 'l-h1-unmanaged',
+        sourceNodeId: 'sw-hop1',
+        sourcePortNumber: 2,
+        targetNodeId: 'sw-unmanaged',
+        targetPortNumber: 1,
+      );
+
+      validator.validate(
+        TopologyProject(
+          name: 'Unmanaged Extension',
+          switches: [swRoot, swHop1, swUnmanaged],
+          links: [linkRootHop1, linkExt],
+        ),
+      );
+
+      expect(swRoot.hopDepthFromRoot, equals(0));
+      expect(swHop1.hopDepthFromRoot, equals(1));
+      expect(swUnmanaged.hopDepthFromRoot, equals(2));
+      expect(linkExt.stpState, equals(LinkStpState.forwarding));
+      expect(linkExt.directionFromRootSourceToTarget, isTrue);
     });
 
     test('emits warning when switch exceeds 6 STP hops from Root Bridge', () {

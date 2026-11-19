@@ -1,5 +1,6 @@
 import 'dart:math' as math;
 
+import 'package:flutter/foundation.dart' show listEquals, setEquals;
 import 'package:material_ui/material_ui.dart';
 
 import '../../../domain/models/endpoint_node_instance.dart';
@@ -12,17 +13,64 @@ import 'switch_node_widget.dart';
 
 /// Geometry metadata for an edge so both [LinkEdgePainter] and hit-testing share exact paths.
 class LinkGeometry {
-  const LinkGeometry({
+  LinkGeometry({
     required this.link,
     required this.start,
     required this.end,
     required this.control,
-  });
+  })  : linkId = link.id,
+        sourcePortNumber = link.sourcePortNumber,
+        targetPortNumber = link.targetPortNumber,
+        negotiatedSpeed = link.negotiatedSpeed,
+        stpState = link.stpState,
+        blockedAtNodeId = link.blockedAtNodeId,
+        blockedAtPortNumber = link.blockedAtPortNumber,
+        directionFromRootSourceToTarget = link.directionFromRootSourceToTarget,
+        streamTraceState = link.streamTraceState,
+        tracedStreamCount = link.tracedStreamCount,
+        tracedStreamMbps = link.tracedStreamMbps,
+        streamDirectionSourceToTarget = link.streamDirectionSourceToTarget,
+        estimatedLoadMbps = link.estimatedLoadMbps,
+        hasVlanMismatch = link.hasVlanMismatch,
+        hasMediaMismatch = link.hasMediaMismatch,
+        hasSpeedStepDown = link.hasSpeedStepDown,
+        isSfpStepDown = link.isSfpStepDown,
+        isValidTrunk = link.isValidTrunk,
+        activeVlans = Set<int>.unmodifiable(link.activeVlans),
+        prunedVlans = Set<int>.unmodifiable(link.prunedVlans);
 
   final NetworkLinkEdge link;
   final Offset start;
   final Offset end;
   final Offset control;
+
+  // Snapshotted render state so shouldRepaint accurately detects mutations on
+  // mutable NetworkLinkEdge instances across frames.
+  final String linkId;
+  final int sourcePortNumber;
+  final int targetPortNumber;
+  final PortSpeed negotiatedSpeed;
+  final LinkStpState stpState;
+  final String? blockedAtNodeId;
+  final int? blockedAtPortNumber;
+  final bool directionFromRootSourceToTarget;
+  final LinkStreamTraceState streamTraceState;
+  final int tracedStreamCount;
+  final double tracedStreamMbps;
+  final bool streamDirectionSourceToTarget;
+  final double estimatedLoadMbps;
+  final bool hasVlanMismatch;
+  final bool hasMediaMismatch;
+  final bool hasSpeedStepDown;
+  final bool isSfpStepDown;
+  final bool isValidTrunk;
+  final Set<int> activeVlans;
+  final Set<int> prunedVlans;
+
+  double get utilizationPercent {
+    if (negotiatedSpeed.mbps <= 0) return 0.0;
+    return (estimatedLoadMbps / negotiatedSpeed.mbps) * 100.0;
+  }
 
   Offset pointAt(double t) {
     final mt = 1 - t;
@@ -39,6 +87,65 @@ class LinkGeometry {
         2 * (1 - t) * (control.dy - start.dy) + 2 * t * (end.dy - control.dy);
     return Offset(dx, dy);
   }
+
+  @override
+  bool operator ==(Object other) {
+    if (identical(this, other)) return true;
+    return other is LinkGeometry &&
+        other.linkId == linkId &&
+        other.start == start &&
+        other.end == end &&
+        other.control == control &&
+        other.sourcePortNumber == sourcePortNumber &&
+        other.targetPortNumber == targetPortNumber &&
+        other.negotiatedSpeed == negotiatedSpeed &&
+        other.stpState == stpState &&
+        other.blockedAtNodeId == blockedAtNodeId &&
+        other.blockedAtPortNumber == blockedAtPortNumber &&
+        other.directionFromRootSourceToTarget ==
+            directionFromRootSourceToTarget &&
+        other.streamTraceState == streamTraceState &&
+        other.tracedStreamCount == tracedStreamCount &&
+        other.tracedStreamMbps == tracedStreamMbps &&
+        other.streamDirectionSourceToTarget == streamDirectionSourceToTarget &&
+        other.estimatedLoadMbps == estimatedLoadMbps &&
+        other.hasVlanMismatch == hasVlanMismatch &&
+        other.hasMediaMismatch == hasMediaMismatch &&
+        other.hasSpeedStepDown == hasSpeedStepDown &&
+        other.isSfpStepDown == isSfpStepDown &&
+        other.isValidTrunk == isValidTrunk &&
+        other.activeVlans.length == activeVlans.length &&
+        other.prunedVlans.length == prunedVlans.length &&
+        setEquals(other.activeVlans, activeVlans) &&
+        setEquals(other.prunedVlans, prunedVlans);
+  }
+
+  @override
+  int get hashCode => Object.hashAll([
+        linkId,
+        start,
+        end,
+        control,
+        sourcePortNumber,
+        targetPortNumber,
+        negotiatedSpeed,
+        stpState,
+        blockedAtNodeId,
+        blockedAtPortNumber,
+        directionFromRootSourceToTarget,
+        streamTraceState,
+        tracedStreamCount,
+        tracedStreamMbps,
+        streamDirectionSourceToTarget,
+        estimatedLoadMbps,
+        hasVlanMismatch,
+        hasMediaMismatch,
+        hasSpeedStepDown,
+        isSfpStepDown,
+        isValidTrunk,
+        activeVlans.length,
+        prunedVlans.length,
+      ]);
 }
 
 /// Estimates rendered switch card height from its role pills, PoE bar, and port strip.
@@ -205,21 +312,20 @@ class LinkEdgePainter extends CustomPainter {
         isTrunkFilterActive || highlightedVlanId != null || isStreamTraceActive;
 
     for (final geom in geometries) {
-      final link = geom.link;
-      final isSelected = link.id == selectedLinkId;
+      final isSelected = geom.linkId == selectedLinkId;
 
-      final isBlocked = link.stpState == LinkStpState.blocking;
-      final isUnprotectedLoop = link.stpState == LinkStpState.loopUnprotected;
+      final isBlocked = geom.stpState == LinkStpState.blocking;
+      final isUnprotectedLoop = geom.stpState == LinkStpState.loopUnprotected;
       final isVlanHighlighted = highlightedVlanId != null &&
-          link.activeVlans.contains(highlightedVlanId) &&
-          !link.hasVlanMismatch &&
-          !link.prunedVlans.contains(highlightedVlanId);
+          geom.activeVlans.contains(highlightedVlanId) &&
+          !geom.hasVlanMismatch &&
+          !geom.prunedVlans.contains(highlightedVlanId);
       final isVlanPruned = highlightedVlanId != null &&
-          link.prunedVlans.contains(highlightedVlanId);
-      final traceState = link.streamTraceState;
+          geom.prunedVlans.contains(highlightedVlanId);
+      final traceState = geom.streamTraceState;
       final matchesActiveFilter = isStreamTraceActive
           ? (traceState != LinkStreamTraceState.none)
-          : (isTrunkFilterActive ? link.isValidTrunk : isVlanHighlighted);
+          : (isTrunkFilterActive ? geom.isValidTrunk : isVlanHighlighted);
 
       Color lineColor;
       double strokeWidth = isSelected ? 3.4 : 2.3;
@@ -246,12 +352,16 @@ class LinkEdgePainter extends CustomPainter {
           lineColor = AppTheme.success;
           strokeWidth = isSelected ? 3.6 : 3.2;
           dashed = isBlocked;
+        } else if (highlightedVlanId != null && isVlanPruned) {
+          lineColor = AppTheme.error;
+          strokeWidth = isSelected ? 3.4 : 2.6;
+          dashed = true;
         } else {
           lineColor = AppTheme.textMuted.withValues(alpha: 0.22);
           strokeWidth = 1.5;
           dashed = false;
         }
-      } else if (link.hasMediaMismatch) {
+      } else if (geom.hasMediaMismatch) {
         lineColor = AppTheme.error;
         strokeWidth = 3.2;
         dashed = true;
@@ -261,11 +371,11 @@ class LinkEdgePainter extends CustomPainter {
       } else if (isBlocked) {
         lineColor = AppTheme.error;
         dashed = true;
-      } else if (link.hasVlanMismatch || link.utilizationPercent > 95.0) {
+      } else if (geom.hasVlanMismatch || geom.utilizationPercent > 95.0) {
         lineColor = AppTheme.error;
-      } else if (link.hasSpeedStepDown || link.utilizationPercent > 75.0) {
+      } else if (geom.hasSpeedStepDown || geom.utilizationPercent > 75.0) {
         lineColor = AppTheme.warning;
-      } else if (link.stpState == LinkStpState.forwarding) {
+      } else if (geom.stpState == LinkStpState.forwarding) {
         lineColor = AppTheme.success;
       } else {
         lineColor = AppTheme.accent;
@@ -302,16 +412,16 @@ class LinkEdgePainter extends CustomPainter {
             canvas,
             geom,
             lineColor,
-            sourceToTarget: link.streamDirectionSourceToTarget,
+            sourceToTarget: geom.streamDirectionSourceToTarget,
           );
         }
-      } else if (link.stpState == LinkStpState.forwarding &&
+      } else if (geom.stpState == LinkStpState.forwarding &&
           (!isFilterActive || matchesActiveFilter)) {
         _drawDirectionArrow(
           canvas,
           geom,
           lineColor,
-          sourceToTarget: link.directionFromRootSourceToTarget,
+          sourceToTarget: geom.directionFromRootSourceToTarget,
         );
       }
 
@@ -408,24 +518,22 @@ class LinkEdgePainter extends CustomPainter {
     bool isFilterActive,
     bool matchesActiveFilter,
   ) {
-    if (isFilterActive && !matchesActiveFilter) {
+    if (isFilterActive && !matchesActiveFilter && !isVlanPruned) {
       return; // Dimmed unrelated or misconfigured links stay uncluttered
     }
-
-    final link = geom.link;
 
     double t = 0.5;
     String label;
     Color textColor;
 
     if (isStreamTraceActive) {
-      switch (link.streamTraceState) {
+      switch (geom.streamTraceState) {
         case LinkStreamTraceState.delivered:
           label =
-              '${link.tracedStreamCount} str • ${link.tracedStreamMbps.toStringAsFixed(1)}M';
+              '${geom.tracedStreamCount} str • ${geom.tracedStreamMbps.toStringAsFixed(1)}M';
           textColor = AppTheme.success;
         case LinkStreamTraceState.flooded:
-          label = 'FLOODED ${link.tracedStreamMbps.toStringAsFixed(1)}M';
+          label = 'FLOODED ${geom.tracedStreamMbps.toStringAsFixed(1)}M';
           textColor = AppTheme.warning;
         case LinkStreamTraceState.igmpPruned:
           label = 'IGMP PRUNED';
@@ -433,33 +541,33 @@ class LinkEdgePainter extends CustomPainter {
         case LinkStreamTraceState.none:
           return;
       }
-    } else if (link.hasMediaMismatch) {
+    } else if (geom.hasMediaMismatch) {
       label = 'MEDIA MISMATCH';
       textColor = AppTheme.error;
     } else if (isUnprotectedLoop) {
       label = 'LOOP!';
       textColor = AppTheme.error;
     } else if (isBlocked) {
-      t = (link.blockedAtNodeId == link.sourceNodeId) ? 0.28 : 0.72;
-      label = 'BLK (STP) P${link.blockedAtPortNumber ?? ""}';
+      t = (geom.blockedAtNodeId == geom.link.sourceNodeId) ? 0.28 : 0.72;
+      label = 'BLK (STP) P${geom.blockedAtPortNumber ?? ""}';
       textColor = AppTheme.error;
     } else if (isVlanPruned) {
       label = 'VLAN $highlightedVlanId PRUNED';
       textColor = AppTheme.error;
-    } else if (link.hasVlanMismatch) {
+    } else if (geom.hasVlanMismatch) {
       label = 'VLAN MISMATCH';
       textColor = AppTheme.error;
-    } else if (link.hasSpeedStepDown) {
-      label = link.isSfpStepDown
+    } else if (geom.hasSpeedStepDown) {
+      label = geom.isSfpStepDown
           ? '1G SFP STEP-DOWN'
-          : '${link.negotiatedSpeed.label} STEP-DOWN';
+          : '${geom.negotiatedSpeed.label} STEP-DOWN';
       textColor = AppTheme.warning;
     } else {
-      final loadStr = link.estimatedLoadMbps >= 0.1
-          ? ' • ${link.estimatedLoadMbps.toStringAsFixed(1)}M'
+      final loadStr = geom.estimatedLoadMbps >= 0.1
+          ? ' • ${geom.estimatedLoadMbps.toStringAsFixed(1)}M'
           : '';
       label =
-          'P${link.sourcePortNumber}↔P${link.targetPortNumber} (${link.negotiatedSpeed.label}$loadStr)';
+          'P${geom.sourcePortNumber}↔P${geom.targetPortNumber} (${geom.negotiatedSpeed.label}$loadStr)';
       textColor = AppTheme.textPrimary;
     }
 
@@ -508,7 +616,7 @@ class LinkEdgePainter extends CustomPainter {
         oldDelegate.highlightedVlanId != highlightedVlanId ||
         oldDelegate.isTrunkFilterActive != isTrunkFilterActive ||
         oldDelegate.isStreamTraceActive != isStreamTraceActive ||
-        oldDelegate.geometries != geometries;
+        !listEquals(oldDelegate.geometries, geometries);
   }
 }
 
@@ -521,7 +629,7 @@ class CanvasGridPainter extends CustomPainter {
   @override
   void paint(Canvas canvas, Size size) {
     final minorPaint = Paint()
-      ..color = isDark ? const Color(0xFF252A32) : const Color(0xFFDADEE5)
+      ..color = AppTheme.canvasGridMinor
       ..strokeWidth = 1.0;
 
     final majorPaint = Paint()

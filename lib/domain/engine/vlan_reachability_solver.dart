@@ -5,6 +5,7 @@ import '../models/switch_node_instance.dart';
 import '../models/switch_port_config.dart';
 import '../models/validation_issue.dart';
 import 'multicast_flow_tracer.dart';
+import 'topology_graph_utils.dart';
 
 /// Pass 2: Link-Level VLAN Symmetry Checks & Per-VLAN BFS Path Tracer.
 class VlanReachabilitySolver {
@@ -15,6 +16,7 @@ class VlanReachabilitySolver {
     required Map<String, EndpointNodeInstance> endpointsById,
     required List<NetworkLinkEdge> links,
     required List<ValidationIssue> issues,
+    Map<String, EndpointPortAttachment>? precomputedAttachments,
   }) {
     // 2.1 Evaluate VLANs & symmetry on all links.
     for (final link in links) {
@@ -49,11 +51,12 @@ class VlanReachabilitySolver {
     }
 
     // Map each (endpointId, epPortNumber) to its attached switch, switch port, and access link.
-    final epAttachments = MulticastFlowTracer.buildEndpointAttachments(
-      switchesById: switchesById,
-      endpointsById: endpointsById,
-      links: links,
-    );
+    final epAttachments = precomputedAttachments ??
+        MulticastFlowTracer.buildEndpointAttachments(
+          switchesById: switchesById,
+          endpointsById: endpointsById,
+          links: links,
+        );
 
     // Check endpoint flow VLAN vs connected switch port VLAN.
     for (final ep in endpointsById.values) {
@@ -128,7 +131,7 @@ class VlanReachabilitySolver {
               continue;
             }
 
-            final reachable = _isReachableOnVlan(
+            final reachable = isVlanReachable(
               startSwitchId: attA.sw.id,
               targetSwitchId: attB.sw.id,
               vlanId: vlanId,
@@ -345,30 +348,6 @@ class VlanReachabilitySolver {
     }
   }
 
-  bool _isReachableOnVlan({
-    required String startSwitchId,
-    required String targetSwitchId,
-    required int vlanId,
-    required List<NetworkLinkEdge> forwardingLinks,
-  }) {
-    if (startSwitchId == targetSwitchId) return true;
-    final visited = <String>{startSwitchId};
-    final queue = <String>[startSwitchId];
-    while (queue.isNotEmpty) {
-      final curr = queue.removeAt(0);
-      for (final link in forwardingLinks) {
-        if (!link.connectsNode(curr)) continue;
-        if (!link.activeVlans.contains(vlanId)) continue;
-        final next = link.otherNodeId(curr);
-        if (next == targetSwitchId) return true;
-        if (visited.add(next)) {
-          queue.add(next);
-        }
-      }
-    }
-    return false;
-  }
-
   NetworkLinkEdge? _findBlockingVlanHop({
     required String startSwitchId,
     required String targetSwitchId,
@@ -377,39 +356,21 @@ class VlanReachabilitySolver {
   }) {
     // BFS on physical forwarding topology (ignoring VLAN filter) to reconstruct
     // the active STP path between startSwitchId and targetSwitchId.
-    final visited = <String>{startSwitchId};
-    final parentLink = <String, NetworkLinkEdge>{};
-    final parentNode = <String, String>{};
-    final queue = <String>[startSwitchId];
-    var found = false;
-
-    while (queue.isNotEmpty && !found) {
-      final curr = queue.removeAt(0);
-      for (final link in forwardingLinks) {
-        if (!link.connectsNode(curr)) continue;
-        final next = link.otherNodeId(curr);
-        if (visited.add(next)) {
-          parentLink[next] = link;
-          parentNode[next] = curr;
-          if (next == targetSwitchId) {
-            found = true;
-            break;
-          }
-          queue.add(next);
-        }
-      }
-    }
-
-    if (!found) return null;
+    final bfs = buildBfsTree(
+      rootSwitchId: startSwitchId,
+      links: forwardingLinks,
+      stopAtSwitchId: targetSwitchId,
+    );
+    if (!bfs.visited.contains(targetSwitchId)) return null;
 
     // Walk path from start -> target and return first hop missing vlanId.
     final pathLinks = <NetworkLinkEdge>[];
     String? cursor = targetSwitchId;
     while (cursor != null && cursor != startSwitchId) {
-      final l = parentLink[cursor];
+      final l = bfs.parentLink[cursor];
       if (l == null) break;
       pathLinks.add(l);
-      cursor = parentNode[cursor];
+      cursor = bfs.parentNode[cursor];
     }
 
     for (final link in pathLinks.reversed) {

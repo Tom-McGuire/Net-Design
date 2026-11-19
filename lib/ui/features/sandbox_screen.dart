@@ -45,6 +45,18 @@ class _SandboxScreenState extends State<SandboxScreen> {
     final vm = context.read<SandboxViewModel>();
     final isModifier = HardwareKeyboard.instance.isControlPressed ||
         HardwareKeyboard.instance.isMetaPressed;
+    final isShift = HardwareKeyboard.instance.isShiftPressed;
+
+    if (isModifier && event.logicalKey == LogicalKeyboardKey.keyZ) {
+      if (isShift) {
+        return vm.redo() ? KeyEventResult.handled : KeyEventResult.ignored;
+      }
+      return vm.undo() ? KeyEventResult.handled : KeyEventResult.ignored;
+    }
+
+    if (isModifier && !isShift && event.logicalKey == LogicalKeyboardKey.keyY) {
+      return vm.redo() ? KeyEventResult.handled : KeyEventResult.ignored;
+    }
 
     if (isModifier && event.logicalKey == LogicalKeyboardKey.keyC) {
       return vm.copySelectedNode()
@@ -84,9 +96,10 @@ class _SandboxScreenState extends State<SandboxScreen> {
 
   @override
   Widget build(BuildContext context) {
-    // Watch view model so theme toggles rebuild this tree in place without
-    // recreating _SandboxScreenState or re-opening the startup advisory popup.
-    context.watch<SandboxViewModel>();
+    // Watch themeRevision so theme toggles rebuild this tree in place without
+    // recreating _SandboxScreenState or re-opening the startup advisory popup,
+    // while avoiding full-tree rebuilds on 60Hz node drag updates.
+    context.select<SandboxViewModel, int>((vm) => vm.themeRevision);
 
     return Focus(
       focusNode: _shortcutFocusNode,

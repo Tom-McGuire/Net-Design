@@ -1,5 +1,6 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:net_design/data/services/device_templates.dart';
+import 'package:net_design/domain/engine/cli_config_generator.dart';
 import 'package:net_design/domain/engine/multicast_flow_tracer.dart';
 import 'package:net_design/domain/engine/multicast_stream_resolver.dart';
 import 'package:net_design/domain/engine/topology_validator.dart';
@@ -470,6 +471,301 @@ void main() {
         res.issues.any((i) => i.title == 'Orphan RX Stream Subscription'),
         isTrue,
       );
+    });
+
+    test('Intermediate snooping-disabled switch floods multicast onto downstream trunks instead of pruning', () {
+      SwitchNodeInstance buildSwitch({
+        required String id,
+        required String mac,
+        required int prio,
+        required bool snoopingEnabled,
+        required bool querierEnabled,
+      }) {
+        return SwitchNodeInstance(
+          id: id,
+          templateId: 'tpl-sw',
+          userLabel: id,
+          macAddress: mac,
+          stpPriority: prio,
+          vlanConfigs: {
+            1: const SwitchVlanSettings(vlanId: 1, vlanName: 'Mgmt'),
+            20: SwitchVlanSettings(
+              vlanId: 20,
+              vlanName: 'sACN',
+              igmpSnoopingEnabled: snoopingEnabled,
+              igmpQuerierEnabled: querierEnabled,
+            ),
+          },
+          ports: [
+            SwitchPortConfig(
+              portNumber: 1,
+              portMode: SwitchPortMode.access,
+              nativeVlan: 20,
+            ),
+            SwitchPortConfig(
+              portNumber: 2,
+              portMode: SwitchPortMode.trunk,
+              nativeVlan: 1,
+              allowedVlans: const {1, 20},
+            ),
+            SwitchPortConfig(
+              portNumber: 3,
+              portMode: SwitchPortMode.trunk,
+              nativeVlan: 1,
+              allowedVlans: const {1, 20},
+            ),
+            SwitchPortConfig(
+              portNumber: 4,
+              portMode: SwitchPortMode.trunk,
+              nativeVlan: 1,
+              allowedVlans: const {1, 20},
+            ),
+          ],
+        );
+      }
+
+      final swTx = buildSwitch(
+        id: 'sw-tx',
+        mac: '02:00:00:00:00:01',
+        prio: 4096,
+        snoopingEnabled: true,
+        querierEnabled: false,
+      );
+      final swMid = buildSwitch(
+        id: 'sw-mid',
+        mac: '02:00:00:00:00:02',
+        prio: 32768,
+        snoopingEnabled: false,
+        querierEnabled: false,
+      );
+      final swQuerier = buildSwitch(
+        id: 'sw-querier',
+        mac: '02:00:00:00:00:03',
+        prio: 32768,
+        snoopingEnabled: true,
+        querierEnabled: true,
+      );
+      final swUnused = buildSwitch(
+        id: 'sw-unused',
+        mac: '02:00:00:00:00:04',
+        prio: 32768,
+        snoopingEnabled: true,
+        querierEnabled: false,
+      );
+
+      final epTx = EndpointNodeInstance(
+        id: 'ep-tx',
+        templateId: 't-tx',
+        userLabel: 'Console TX',
+        activeTrafficFlows: const [
+          TrafficRequirement(
+            id: 'f-tx',
+            protocol: TrafficProtocol.sacn,
+            direction: TrafficDirection.txPublisher,
+            deliveryType: DeliveryType.multicast,
+            estimatedBandwidthMbps: 1.0,
+            requiresIgmp: true,
+            defaultVlanId: 20,
+            sacnUniverseSpec: '1-4',
+          ),
+        ],
+      );
+      final epRx = EndpointNodeInstance(
+        id: 'ep-rx',
+        templateId: 't-rx',
+        userLabel: 'Node RX',
+        activeTrafficFlows: const [
+          TrafficRequirement(
+            id: 'f-rx',
+            protocol: TrafficProtocol.sacn,
+            direction: TrafficDirection.rxSubscriber,
+            deliveryType: DeliveryType.multicast,
+            estimatedBandwidthMbps: 1.0,
+            requiresIgmp: true,
+            defaultVlanId: 20,
+            sacnUniverseSpec: '1-4',
+          ),
+        ],
+      );
+
+      final lnkTxMid = NetworkLinkEdge(
+        id: 'lnk-tx-mid',
+        sourceNodeId: 'sw-tx',
+        sourcePortNumber: 2,
+        targetNodeId: 'sw-mid',
+        targetPortNumber: 2,
+      );
+      final lnkMidQuerier = NetworkLinkEdge(
+        id: 'lnk-mid-querier',
+        sourceNodeId: 'sw-mid',
+        sourcePortNumber: 3,
+        targetNodeId: 'sw-querier',
+        targetPortNumber: 2,
+      );
+      final lnkMidUnused = NetworkLinkEdge(
+        id: 'lnk-mid-unused',
+        sourceNodeId: 'sw-mid',
+        sourcePortNumber: 4,
+        targetNodeId: 'sw-unused',
+        targetPortNumber: 2,
+      );
+
+      final project = TopologyProject(
+        name: 'Intermediate Snooping Disabled Flood',
+        switches: [swTx, swMid, swQuerier, swUnused],
+        endpoints: [epTx, epRx],
+        links: [
+          NetworkLinkEdge(
+            id: 'lnk-ep-tx',
+            sourceNodeId: 'ep-tx',
+            sourcePortNumber: 1,
+            targetNodeId: 'sw-tx',
+            targetPortNumber: 1,
+          ),
+          lnkTxMid,
+          lnkMidQuerier,
+          lnkMidUnused,
+          NetworkLinkEdge(
+            id: 'lnk-ep-rx',
+            sourceNodeId: 'ep-rx',
+            sourcePortNumber: 1,
+            targetNodeId: 'sw-querier',
+            targetPortNumber: 1,
+          ),
+        ],
+      );
+
+      const TopologyValidator().validate(project);
+      final txTarget = MulticastFlowTracer.buildTraceTargets(project)
+          .firstWhere((t) => t.id.startsWith('tx:'));
+      MulticastFlowTracer.applyTrace(project: project, target: txTarget);
+
+      expect(lnkTxMid.streamTraceState, LinkStreamTraceState.delivered);
+      expect(lnkMidQuerier.streamTraceState, LinkStreamTraceState.delivered);
+      expect(lnkMidUnused.streamTraceState, LinkStreamTraceState.flooded);
+      expect(lnkMidUnused.estimatedLoadMbps, closeTo(1.0, 0.001));
+    });
+
+    test('dropUnregisteredMulticast=false floods unregistered streams across VLAN component', () {
+      SwitchNodeInstance makeSw(String id, String mac, int prio, {required bool querier}) {
+        return SwitchNodeInstance(
+          id: id,
+          templateId: 'tpl-sw',
+          userLabel: id,
+          macAddress: mac,
+          stpPriority: prio,
+          vlanConfigs: {
+            1: const SwitchVlanSettings(vlanId: 1, vlanName: 'Mgmt'),
+            20: SwitchVlanSettings(
+              vlanId: 20,
+              vlanName: 'sACN',
+              igmpSnoopingEnabled: true,
+              igmpQuerierEnabled: querier,
+              dropUnregisteredMulticast: false,
+            ),
+          },
+          ports: [
+            SwitchPortConfig(
+              portNumber: 1,
+              portMode: SwitchPortMode.access,
+              nativeVlan: 20,
+            ),
+            SwitchPortConfig(
+              portNumber: 2,
+              portMode: SwitchPortMode.trunk,
+              nativeVlan: 1,
+              allowedVlans: const {1, 20},
+            ),
+          ],
+        );
+      }
+
+      final swTx = makeSw('sw-tx', '02:00:00:00:00:01', 4096, querier: true);
+      final swPeer = makeSw('sw-peer', '02:00:00:00:00:02', 32768, querier: false);
+      final epTx = EndpointNodeInstance(
+        id: 'ep-tx',
+        templateId: 't-tx',
+        userLabel: 'Console TX',
+        activeTrafficFlows: const [
+          TrafficRequirement(
+            id: 'f-tx',
+            protocol: TrafficProtocol.sacn,
+            direction: TrafficDirection.txPublisher,
+            deliveryType: DeliveryType.multicast,
+            estimatedBandwidthMbps: 1.0,
+            requiresIgmp: true,
+            defaultVlanId: 20,
+            sacnUniverseSpec: '1-4',
+          ),
+        ],
+      );
+      final trunk = NetworkLinkEdge(
+        id: 'lnk-trunk',
+        sourceNodeId: 'sw-tx',
+        sourcePortNumber: 2,
+        targetNodeId: 'sw-peer',
+        targetPortNumber: 2,
+      );
+      final project = TopologyProject(
+        name: 'Drop Unregistered Disabled',
+        switches: [swTx, swPeer],
+        endpoints: [epTx],
+        links: [
+          NetworkLinkEdge(
+            id: 'lnk-ep',
+            sourceNodeId: 'ep-tx',
+            sourcePortNumber: 1,
+            targetNodeId: 'sw-tx',
+            targetPortNumber: 1,
+          ),
+          trunk,
+        ],
+      );
+
+      const TopologyValidator().validate(project);
+      final txTarget = MulticastFlowTracer.buildTraceTargets(project)
+          .firstWhere((t) => t.id.startsWith('tx:'));
+      MulticastFlowTracer.applyTrace(project: project, target: txTarget);
+
+      expect(trunk.streamTraceState, LinkStreamTraceState.flooded);
+      expect(trunk.estimatedLoadMbps, closeTo(1.0, 0.001));
+    });
+
+    test('tryPortByNumber returns null for missing endpoint port and CliConfigGenerator formats switch config', () {
+      const tpl = EndpointTemplate(id: 't', name: 'T', nicSpeed: PortSpeed.speed1G);
+      final ep = EndpointNodeInstance(id: 'ep', templateId: 't', userLabel: 'EP');
+      expect(tpl.tryPortByNumber(1), isNotNull);
+      expect(tpl.tryPortByNumber(99), isNull);
+      expect(ep.tryPortByNumber(1), isNotNull);
+      expect(ep.tryPortByNumber(99), isNull);
+
+      final sw = SwitchNodeInstance(
+        id: 'sw-cli',
+        templateId: 'tpl-sw',
+        userLabel: 'Core CLI',
+        macAddress: '02:00:00:00:00:01',
+        managementIp: '10.0.0.1',
+        stpPriority: 4096,
+        isRootBridge: true,
+        activeQuerierVlans: {20},
+        vlanConfigs: {
+          20: const SwitchVlanSettings(
+            vlanId: 20,
+            vlanName: 'sACN',
+            igmpSnoopingEnabled: true,
+            igmpQuerierEnabled: true,
+          ),
+        },
+        ports: [
+          SwitchPortConfig(portNumber: 1, portMode: SwitchPortMode.access, nativeVlan: 20),
+        ],
+      );
+      final cli = CliConfigGenerator.generate(sw);
+      expect(cli, contains('! Vendor-Neutral Reference Config: Core CLI'));
+      expect(cli, contains('management ip 10.0.0.1'));
+      expect(cli, contains('(ROOT BRIDGE)'));
+      expect(cli, contains('! ACTIVE QUERIER'));
+      expect(cli, contains('switchport access vlan 20'));
     });
   });
 }

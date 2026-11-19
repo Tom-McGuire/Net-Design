@@ -324,7 +324,11 @@ class _EditEndpointTemplateDialogState
                 hintText: 'Primary / Video',
               ),
               onChanged: (v) {
-                _ports[index] = port.copyWith(label: v.trim());
+                final trimmed = v.trim();
+                _ports[index] = port.copyWith(
+                  label: trimmed,
+                  clearLabel: trimmed.isEmpty,
+                );
               },
             ),
           ),
@@ -443,6 +447,7 @@ class _EditEndpointTemplateDialogState
             children: [
               Expanded(
                 child: DropdownButtonFormField<TrafficProtocol>(
+                  key: ValueKey('tpl-flow-proto-${flow.id}-${flow.protocol.name}'),
                   initialValue: flow.protocol,
                   decoration: const InputDecoration(labelText: 'Protocol'),
                   dropdownColor: AppTheme.surfaceElevated,
@@ -469,6 +474,7 @@ class _EditEndpointTemplateDialogState
               const SizedBox(width: 6),
               Expanded(
                 child: DropdownButtonFormField<TrafficDirection>(
+                  key: ValueKey('tpl-flow-dir-${flow.id}-${flow.direction.name}'),
                   initialValue: flow.direction,
                   decoration: const InputDecoration(labelText: 'Direction'),
                   dropdownColor: AppTheme.surfaceElevated,
@@ -525,6 +531,9 @@ class _EditEndpointTemplateDialogState
             children: [
               Expanded(
                 child: DropdownButtonFormField<DeliveryType>(
+                  key: ValueKey(
+                    'tpl-flow-del-${flow.id}-${flow.protocol.name}-${flow.deliveryType.name}',
+                  ),
                   initialValue: flow.deliveryType,
                   decoration: const InputDecoration(labelText: 'Delivery'),
                   dropdownColor: AppTheme.surfaceElevated,
@@ -544,7 +553,7 @@ class _EditEndpointTemplateDialogState
                 width: 96,
                 child: TextFormField(
                   key: ValueKey(
-                    'tpl-flow-mbps-${flow.id}-${flow.sacnUniverseSpec ?? ""}',
+                    'tpl-flow-mbps-${flow.id}-${flow.protocol.name}-${flow.sacnUniverseSpec ?? ""}',
                   ),
                   initialValue: flow.estimatedBandwidthMbps.toString(),
                   keyboardType: TextInputType.number,
@@ -567,6 +576,7 @@ class _EditEndpointTemplateDialogState
               SizedBox(
                 width: 82,
                 child: TextFormField(
+                  key: ValueKey('tpl-flow-vlan-${flow.id}-${flow.protocol.name}'),
                   initialValue: flow.defaultVlanId.toString(),
                   keyboardType: TextInputType.number,
                   style: TextStyle(
@@ -588,7 +598,7 @@ class _EditEndpointTemplateDialogState
           if (isSacnMcast) ...[
             const SizedBox(height: 6),
             TextFormField(
-              key: ValueKey('tpl-flow-sacn-${flow.id}'),
+              key: ValueKey('tpl-flow-sacn-${flow.id}-${flow.protocol.name}'),
               initialValue: flow.sacnUniverseSpec ?? '',
               style: TextStyle(
                 fontFamily: 'monospace',
@@ -619,7 +629,7 @@ class _EditEndpointTemplateDialogState
           ] else if (isOtherMcast) ...[
             const SizedBox(height: 6),
             TextFormField(
-              key: ValueKey('tpl-flow-mcast-${flow.id}'),
+              key: ValueKey('tpl-flow-mcast-${flow.id}-${flow.protocol.name}'),
               initialValue: flow.multicastGroupSpec ?? '',
               style: TextStyle(
                 fontFamily: 'monospace',

@@ -7,6 +7,7 @@ import '../../data/services/device_templates.dart';
 import '../../data/services/library_storage_service.dart';
 import '../../data/services/project_storage_service.dart';
 import '../../data/services/suite_theme_service.dart';
+import '../../domain/engine/cli_config_generator.dart';
 import '../../domain/engine/multicast_flow_tracer.dart';
 import '../../domain/engine/multicast_stream_resolver.dart';
 import '../../domain/engine/topology_validator.dart';
@@ -19,6 +20,14 @@ import '../../domain/models/switch_port_config.dart';
 import '../../domain/models/switch_template.dart';
 import '../../domain/models/topology_project.dart';
 import '../../domain/models/validation_issue.dart';
+
+typedef AdvertisedTxStreamChip = ({
+  String sourceLabel,
+  String? sacnUniverseSpec,
+  String? multicastGroupSpec,
+  String summaryLabel,
+  double bandwidthMbps,
+});
 
 /// Main state container & MVVM view model for the Network Topology Sandbox.
 class SandboxViewModel extends ChangeNotifier {
@@ -95,12 +104,32 @@ class SandboxViewModel extends ChangeNotifier {
   String? get activeStreamTraceId => _activeStreamTraceId;
   bool get isStreamTraceActive => activeStreamTraceTarget != null;
 
+  static const int _maxUndoHistory = 30;
+  final List<String> _undoStack = [];
+  final List<String> _redoStack = [];
+
+  bool get canUndo => _undoStack.isNotEmpty;
+  bool get canRedo => _redoStack.isNotEmpty;
+
+  int _templateSyncRevision = 0;
+  int get templateSyncRevision => _templateSyncRevision;
+
+  int _panelRevision = 0;
+  int get panelRevision => _panelRevision;
+
+  int _themeRevision = 0;
+  int get themeRevision => _themeRevision;
+
+  List<int> _cachedAvailableVlanIds = const [1];
+  List<int> get availableVlanIds => _cachedAvailableVlanIds;
+
+  List<StreamTraceTarget> _cachedStreamTraceTargets = const [];
   List<StreamTraceTarget> get availableStreamTraceTargets =>
-      MulticastFlowTracer.buildTraceTargets(_project);
+      _cachedStreamTraceTargets;
 
   StreamTraceTarget? get activeStreamTraceTarget {
     if (_activeStreamTraceId == null) return null;
-    for (final target in availableStreamTraceTargets) {
+    for (final target in _cachedStreamTraceTargets) {
       if (target.id == _activeStreamTraceId) return target;
     }
     return null;
@@ -153,24 +182,6 @@ class SandboxViewModel extends ChangeNotifier {
     return null;
   }
 
-  List<int> get availableVlanIds {
-    final ids = <int>{..._project.knownVlans.keys};
-    for (final sw in _project.switches) {
-      ids.addAll(sw.vlanConfigs.keys);
-      for (final p in sw.ports) {
-        ids.add(p.nativeVlan);
-        ids.addAll(p.allowedVlans);
-      }
-    }
-    for (final ep in _project.endpoints) {
-      for (final flow in ep.activeTrafficFlows) {
-        ids.add(flow.defaultVlanId);
-      }
-    }
-    final list = ids.toList()..sort();
-    return list;
-  }
-
   /// Formats a VLAN for filters and dropdowns as `<Label> (<id>)` when a
   /// custom label is set, or `VLAN <id>` when no custom label exists.
   String formatVlanDisplay(int vlanId) {
@@ -203,11 +214,38 @@ class SandboxViewModel extends ChangeNotifier {
     final bundle = await _libraryStorage.loadLibrary();
     _switchTemplates = bundle.switchTemplates;
     _endpointTemplates = bundle.endpointTemplates;
+    _notifyPanelChanged();
+  }
+
+  void _notifyPanelChanged() {
+    _panelRevision++;
     notifyListeners();
+  }
+
+  void _recomputeCaches() {
+    final ids = <int>{..._project.knownVlans.keys};
+    for (final sw in _project.switches) {
+      ids.addAll(sw.vlanConfigs.keys);
+      for (final p in sw.ports) {
+        ids.add(p.nativeVlan);
+        ids.addAll(p.allowedVlans);
+      }
+    }
+    for (final ep in _project.endpoints) {
+      for (final flow in ep.activeTrafficFlows) {
+        ids.add(flow.defaultVlanId);
+      }
+    }
+    final sortedIds = ids.toList()..sort();
+    _cachedAvailableVlanIds = List<int>.unmodifiable(sortedIds);
+    _cachedStreamTraceTargets = List<StreamTraceTarget>.unmodifiable(
+      MulticastFlowTracer.buildTraceTargets(_project),
+    );
   }
 
   void _revalidate() {
     _validation = _validator.validate(_project);
+    _recomputeCaches();
     final traceTarget = activeStreamTraceTarget;
     if (traceTarget == null) {
       _activeStreamTraceId = null;
@@ -215,9 +253,72 @@ class SandboxViewModel extends ChangeNotifier {
     MulticastFlowTracer.applyTrace(project: _project, target: traceTarget);
   }
 
+  void recordUndoSnapshot() {
+    _pushUndoSnapshot(_projectStorage.serializeProject(_project));
+  }
+
+  void _pushUndoSnapshot(String snapshot) {
+    if (_undoStack.isNotEmpty && _undoStack.last == snapshot) {
+      return;
+    }
+    _undoStack.add(snapshot);
+    if (_undoStack.length > _maxUndoHistory) {
+      _undoStack.removeAt(0);
+    }
+    _redoStack.clear();
+  }
+
+  bool undo() {
+    if (_undoStack.isEmpty) return false;
+    final currentSnapshot = _projectStorage.serializeProject(_project);
+    _redoStack.add(currentSnapshot);
+    if (_redoStack.length > _maxUndoHistory) {
+      _redoStack.removeAt(0);
+    }
+    final previousJson = _undoStack.removeLast();
+    _restoreSnapshot(previousJson);
+    _lastStatusMessage = 'Undid last change.';
+    _notifyPanelChanged();
+    return true;
+  }
+
+  bool redo() {
+    if (_redoStack.isEmpty) return false;
+    final currentSnapshot = _projectStorage.serializeProject(_project);
+    _undoStack.add(currentSnapshot);
+    if (_undoStack.length > _maxUndoHistory) {
+      _undoStack.removeAt(0);
+    }
+    final nextJson = _redoStack.removeLast();
+    _restoreSnapshot(nextJson);
+    _lastStatusMessage = 'Redid change.';
+    _notifyPanelChanged();
+    return true;
+  }
+
+  void _restoreSnapshot(String rawJson) {
+    _project = _projectStorage.deserializeProject(rawJson);
+    _pendingWireSource = null;
+    if (_selectedSwitchId != null &&
+        !_project.switches.any((s) => s.id == _selectedSwitchId)) {
+      _selectedSwitchId = null;
+      _selectedPortNumber = null;
+    }
+    if (_selectedEndpointId != null &&
+        !_project.endpoints.any((e) => e.id == _selectedEndpointId)) {
+      _selectedEndpointId = null;
+    }
+    if (_selectedLinkId != null &&
+        !_project.links.any((l) => l.id == _selectedLinkId)) {
+      _selectedLinkId = null;
+    }
+    _templateSyncRevision++;
+    _revalidate();
+  }
+
   void clearStatusMessage() {
     _lastStatusMessage = null;
-    notifyListeners();
+    _notifyPanelChanged();
   }
 
   void consumeCanvasCenterRequest() {
@@ -226,22 +327,22 @@ class SandboxViewModel extends ChangeNotifier {
 
   void setIssuesExpanded(bool expanded) {
     _isIssuesExpanded = expanded;
-    notifyListeners();
+    _notifyPanelChanged();
   }
 
   void setInspectorTabIndex(int idx) {
     _inspectorTabIndex = idx;
-    notifyListeners();
+    _notifyPanelChanged();
   }
 
   void setIssueSearchQuery(String query) {
     _issueSearchQuery = query;
-    notifyListeners();
+    _notifyPanelChanged();
   }
 
   void setIssueCategoryFilter(IssueCategory? category) {
     _issueCategoryFilter = category;
-    notifyListeners();
+    _notifyPanelChanged();
   }
 
   void setHighlightedVlan(int? vlanId) {
@@ -249,7 +350,7 @@ class SandboxViewModel extends ChangeNotifier {
     _isTrunkFilterActive = false;
     _activeStreamTraceId = null;
     MulticastFlowTracer.applyTrace(project: _project, target: null);
-    notifyListeners();
+    _notifyPanelChanged();
   }
 
   void setTrunkFilterActive(bool active) {
@@ -259,7 +360,7 @@ class SandboxViewModel extends ChangeNotifier {
       _activeStreamTraceId = null;
       MulticastFlowTracer.applyTrace(project: _project, target: null);
     }
-    notifyListeners();
+    _notifyPanelChanged();
   }
 
   void setActiveStreamTrace(String? traceId) {
@@ -272,7 +373,7 @@ class SandboxViewModel extends ChangeNotifier {
       project: _project,
       target: activeStreamTraceTarget,
     );
-    notifyListeners();
+    _notifyPanelChanged();
   }
 
   NetworkLinkEdge? linkForPort(String nodeId, int portNumber) {
@@ -305,7 +406,7 @@ class SandboxViewModel extends ChangeNotifier {
     _selectedEndpointId = null;
     _selectedLinkId = null;
     _selectedPortNumber = portNumber;
-    notifyListeners();
+    _notifyPanelChanged();
   }
 
   void selectEndpoint(String? endpointId) {
@@ -313,7 +414,7 @@ class SandboxViewModel extends ChangeNotifier {
     _selectedSwitchId = null;
     _selectedLinkId = null;
     _selectedPortNumber = null;
-    notifyListeners();
+    _notifyPanelChanged();
   }
 
   void selectLink(String? linkId) {
@@ -321,7 +422,7 @@ class SandboxViewModel extends ChangeNotifier {
     _selectedSwitchId = null;
     _selectedEndpointId = null;
     _selectedPortNumber = null;
-    notifyListeners();
+    _notifyPanelChanged();
   }
 
   void clearSelection() {
@@ -330,7 +431,7 @@ class SandboxViewModel extends ChangeNotifier {
     _selectedLinkId = null;
     _selectedPortNumber = null;
     _pendingWireSource = null;
-    notifyListeners();
+    _notifyPanelChanged();
   }
 
   /// Focuses and opens inspector for any clicked [ValidationIssue].
@@ -347,7 +448,7 @@ class SandboxViewModel extends ChangeNotifier {
               (posA.dy + posB.dy) / 2 + 80,
             );
           }
-          notifyListeners();
+          _notifyPanelChanged();
           return;
         }
       }
@@ -358,7 +459,7 @@ class SandboxViewModel extends ChangeNotifier {
         if (sw.id == issue.nodeId) {
           selectSwitch(sw.id, portNumber: issue.portNumber);
           _canvasCenterRequest = Offset(sw.dx + 140, sw.dy + 90);
-          notifyListeners();
+          _notifyPanelChanged();
           return;
         }
       }
@@ -366,7 +467,7 @@ class SandboxViewModel extends ChangeNotifier {
         if (ep.id == issue.nodeId) {
           selectEndpoint(ep.id);
           _canvasCenterRequest = Offset(ep.dx + 110, ep.dy + 60);
-          notifyListeners();
+          _notifyPanelChanged();
           return;
         }
       }
@@ -390,19 +491,19 @@ class SandboxViewModel extends ChangeNotifier {
     if (isPortConnected(nodeId, portNumber)) {
       _lastStatusMessage =
           'Port $portNumber is already connected. Remove its link first or pick a free port.';
-      notifyListeners();
+      _notifyPanelChanged();
       return;
     }
     _pendingWireSource = (nodeId: nodeId, portNumber: portNumber);
     _lastStatusMessage =
         'Select a destination port on another switch or endpoint to complete cable link.';
-    notifyListeners();
+    _notifyPanelChanged();
   }
 
   void cancelWiring() {
     _pendingWireSource = null;
     _lastStatusMessage = null;
-    notifyListeners();
+    _notifyPanelChanged();
   }
 
   PortMediaType? portMediaType(String nodeId, int portNumber) {
@@ -456,7 +557,7 @@ class SandboxViewModel extends ChangeNotifier {
       _lastStatusMessage = source.portNumber == targetPortNumber
           ? 'Cannot connect a port to itself.'
           : 'Cannot connect a device back to another port on the same device.';
-      notifyListeners();
+      _notifyPanelChanged();
       return false;
     }
 
@@ -466,13 +567,13 @@ class SandboxViewModel extends ChangeNotifier {
     if (srcIsEp && dstIsEp) {
       _lastStatusMessage =
           'Connect endpoints to a switch port rather than directly to another endpoint.';
-      notifyListeners();
+      _notifyPanelChanged();
       return false;
     }
 
     if (isPortConnected(targetNodeId, targetPortNumber)) {
       _lastStatusMessage = 'Target port $targetPortNumber is already occupied.';
-      notifyListeners();
+      _notifyPanelChanged();
       return false;
     }
 
@@ -481,7 +582,7 @@ class SandboxViewModel extends ChangeNotifier {
     if (srcMedia != null && dstMedia != null && srcMedia != dstMedia) {
       _lastStatusMessage =
           'Media mismatch: cannot connect ${srcMedia.label} to ${dstMedia.label}. Connect RJ45 to RJ45 and SFP/Fibre to SFP/Fibre.';
-      notifyListeners();
+      _notifyPanelChanged();
       return false;
     }
 
@@ -531,6 +632,8 @@ class SandboxViewModel extends ChangeNotifier {
   // --- Simulation Controls ---
 
   void randomiseSwitchMacs() {
+    if (_project.switches.isEmpty) return;
+    recordUndoSnapshot();
     for (var i = 0; i < _project.switches.length; i++) {
       final sw = _project.switches[i];
       _project.switches[i] = sw.copyWith(
@@ -540,7 +643,7 @@ class SandboxViewModel extends ChangeNotifier {
     _revalidate();
     _lastStatusMessage =
         'Randomized switch MAC addresses and re-ran STP election.';
-    notifyListeners();
+    _notifyPanelChanged();
   }
 
   // --- Node & Link Mutations ---
@@ -599,6 +702,7 @@ class SandboxViewModel extends ChangeNotifier {
     double? dx,
     double? dy,
   }) {
+    recordUndoSnapshot();
     final index = _project.switches.length + 1;
     final pos = _resolveSpawnPosition(
       cardWidth: 268.0,
@@ -646,6 +750,7 @@ class SandboxViewModel extends ChangeNotifier {
     double? dx,
     double? dy,
   }) {
+    recordUndoSnapshot();
     final index = _project.endpoints.length + 1;
     final pos = _resolveSpawnPosition(
       cardWidth: 228.0,
@@ -663,6 +768,7 @@ class SandboxViewModel extends ChangeNotifier {
       userLabel: '${template.name.split(' ').take(2).join(' ')} #$index',
       category: template.category,
       nicSpeed: template.nicSpeed,
+      macAddress: SwitchNodeInstance.generateRandomLocalMac(_rng),
       ports: List<EndpointPortConfig>.from(template.effectivePorts),
       activeTrafficFlows: template.trafficProfiles
           .map((f) => f.copyWith(id: 'flow-${_uuid.v4().substring(0, 6)}'))
@@ -711,6 +817,7 @@ class SandboxViewModel extends ChangeNotifier {
     String targetNodeId,
     int targetPortNumber,
   ) {
+    recordUndoSnapshot();
     final link = NetworkLinkEdge(
       id: 'lnk-${_uuid.v4().substring(0, 8)}',
       sourceNodeId: sourceNodeId,
@@ -726,13 +833,19 @@ class SandboxViewModel extends ChangeNotifier {
   }
 
   void removeLink(String linkId) {
+    if (!_project.links.any((l) => l.id == linkId)) return;
+    recordUndoSnapshot();
     _project.links.removeWhere((l) => l.id == linkId);
     if (_selectedLinkId == linkId) _selectedLinkId = null;
     _revalidate();
-    notifyListeners();
+    _notifyPanelChanged();
   }
 
   void removeNode(String nodeId) {
+    final exists = _project.switches.any((s) => s.id == nodeId) ||
+        _project.endpoints.any((e) => e.id == nodeId);
+    if (!exists) return;
+    recordUndoSnapshot();
     _project.switches.removeWhere((s) => s.id == nodeId);
     _project.endpoints.removeWhere((e) => e.id == nodeId);
     _project.links.removeWhere((l) => l.connectsNode(nodeId));
@@ -747,7 +860,7 @@ class SandboxViewModel extends ChangeNotifier {
       _pendingWireSource = null;
     }
     _revalidate();
-    notifyListeners();
+    _notifyPanelChanged();
   }
 
   void copySwitch(String switchId) {
@@ -764,7 +877,7 @@ class SandboxViewModel extends ChangeNotifier {
     );
     _copiedEndpoint = null;
     _lastStatusMessage = 'Copied ${sw.userLabel}.';
-    notifyListeners();
+    _notifyPanelChanged();
   }
 
   void copyEndpoint(String endpointId) {
@@ -780,7 +893,7 @@ class SandboxViewModel extends ChangeNotifier {
     );
     _copiedSwitch = null;
     _lastStatusMessage = 'Copied ${ep.userLabel}.';
-    notifyListeners();
+    _notifyPanelChanged();
   }
 
   bool copySelectedNode() {
@@ -798,6 +911,7 @@ class SandboxViewModel extends ChangeNotifier {
   Object? pasteCopiedNode({double? dx, double? dy}) {
     final swSource = _copiedSwitch;
     if (swSource != null) {
+      recordUndoSnapshot();
       final pos = _resolveSpawnPosition(
         cardWidth: 268.0,
         cardHeight: 148.0,
@@ -841,6 +955,7 @@ class SandboxViewModel extends ChangeNotifier {
 
     final epSource = _copiedEndpoint;
     if (epSource != null) {
+      recordUndoSnapshot();
       final pos = _resolveSpawnPosition(
         cardWidth: 228.0,
         cardHeight: 104.0,
@@ -884,19 +999,19 @@ class SandboxViewModel extends ChangeNotifier {
     if (_selectedSwitchId != null) {
       removeNode(_selectedSwitchId!);
       _lastStatusMessage = 'Deleted selected switch.';
-      notifyListeners();
+      _notifyPanelChanged();
       return true;
     }
     if (_selectedEndpointId != null) {
       removeNode(_selectedEndpointId!);
       _lastStatusMessage = 'Deleted selected endpoint.';
-      notifyListeners();
+      _notifyPanelChanged();
       return true;
     }
     if (_selectedLinkId != null) {
       removeLink(_selectedLinkId!);
       _lastStatusMessage = 'Deleted selected link.';
-      notifyListeners();
+      _notifyPanelChanged();
       return true;
     }
     return false;
@@ -907,7 +1022,7 @@ class SandboxViewModel extends ChangeNotifier {
     if (idx < 0) return;
     _project.switches[idx] = updated;
     _revalidate();
-    notifyListeners();
+    _notifyPanelChanged();
   }
 
   void updatePort(String switchId, SwitchPortConfig updatedPort) {
@@ -938,7 +1053,7 @@ class SandboxViewModel extends ChangeNotifier {
       vlanConfigs: vlanConfigs,
     );
     _revalidate();
-    notifyListeners();
+    _notifyPanelChanged();
   }
 
   void updateSwitchVlan(String switchId, SwitchVlanSettings settings) {
@@ -950,7 +1065,7 @@ class SandboxViewModel extends ChangeNotifier {
     _project.knownVlans.putIfAbsent(settings.vlanId, () => settings.vlanName);
     _project.switches[idx] = sw.copyWith(vlanConfigs: vlanConfigs);
     _revalidate();
-    notifyListeners();
+    _notifyPanelChanged();
   }
 
   void addKnownVlan(int vlanId, String name) {
@@ -964,13 +1079,13 @@ class SandboxViewModel extends ChangeNotifier {
         nextConfigs[vlanId] = SwitchVlanSettings(
           vlanId: vlanId,
           vlanName: label,
-          igmpSnoopingEnabled: sw.supportsIgmpSnooping,
+          igmpSnoopingEnabled: false,
         );
         _project.switches[i] = sw.copyWith(vlanConfigs: nextConfigs);
       }
     }
     _revalidate();
-    notifyListeners();
+    _notifyPanelChanged();
   }
 
   void updateEndpoint(EndpointNodeInstance updated) {
@@ -981,7 +1096,7 @@ class SandboxViewModel extends ChangeNotifier {
       _project.knownVlans.putIfAbsent(f.defaultVlanId, () => 'VLAN ${f.defaultVlanId}');
     }
     _revalidate();
-    notifyListeners();
+    _notifyPanelChanged();
   }
 
   void autoFixLinkVlanSymmetry(String linkId) {
@@ -998,6 +1113,8 @@ class SandboxViewModel extends ChangeNotifier {
     final portA = swA.portByNumber(link.sourcePortNumber);
     final portB = swB.portByNumber(link.targetPortNumber);
     if (portA == null || portB == null) return;
+
+    recordUndoSnapshot();
 
     final unionVlans = {
       ...portA.effectiveVlans(switchSupportsVlans: swA.supportsVlans),
@@ -1024,6 +1141,7 @@ class SandboxViewModel extends ChangeNotifier {
       ),
     );
     _lastStatusMessage = 'Synchronized trunk VLANs on both ends of link.';
+    _notifyPanelChanged();
   }
 
   // --- Template Library CRUD ---
@@ -1036,13 +1154,13 @@ class SandboxViewModel extends ChangeNotifier {
       _switchTemplates.add(template);
     }
     await _saveLibrarySafe();
-    notifyListeners();
+    _notifyPanelChanged();
   }
 
   Future<void> deleteSwitchTemplate(String id) async {
     _switchTemplates.removeWhere((t) => t.id == id);
     await _saveLibrarySafe();
-    notifyListeners();
+    _notifyPanelChanged();
   }
 
   Future<void> saveEndpointTemplate(EndpointTemplate template) async {
@@ -1053,20 +1171,20 @@ class SandboxViewModel extends ChangeNotifier {
       _endpointTemplates.add(template);
     }
     await _saveLibrarySafe();
-    notifyListeners();
+    _notifyPanelChanged();
   }
 
   Future<void> deleteEndpointTemplate(String id) async {
     _endpointTemplates.removeWhere((t) => t.id == id);
     await _saveLibrarySafe();
-    notifyListeners();
+    _notifyPanelChanged();
   }
 
   Future<void> resetLibraryDefaults() async {
     _switchTemplates = DeviceTemplates.defaultSwitchTemplates();
     _endpointTemplates = DeviceTemplates.defaultEndpointTemplates();
     await _saveLibrarySafe();
-    notifyListeners();
+    _notifyPanelChanged();
   }
 
   /// Applies [template] hardware/capability settings to matching switches on
@@ -1076,6 +1194,7 @@ class SandboxViewModel extends ChangeNotifier {
     SwitchTemplate template, {
     String? onlySwitchId,
   }) {
+    final beforeSnapshot = _projectStorage.serializeProject(_project);
     var updatedCount = 0;
     final templatePorts = template.generateDefaultPorts();
     final validPortNums = {for (final p in templatePorts) p.portNumber};
@@ -1103,7 +1222,6 @@ class SandboxViewModel extends ChangeNotifier {
               portMode: old.portMode,
               nativeVlan: old.nativeVlan,
               allowedVlans: Set<int>.from(old.allowedVlans),
-              lagGroupId: old.lagGroupId,
             );
           }(),
       ];
@@ -1148,10 +1266,12 @@ class SandboxViewModel extends ChangeNotifier {
     }
 
     if (updatedCount > 0) {
+      _pushUndoSnapshot(beforeSnapshot);
+      _templateSyncRevision++;
       _revalidate();
       _lastStatusMessage =
           'Updated $updatedCount switch${updatedCount == 1 ? '' : 'es'} on plan from "${template.name}".';
-      notifyListeners();
+      _notifyPanelChanged();
     }
     return updatedCount;
   }
@@ -1163,6 +1283,7 @@ class SandboxViewModel extends ChangeNotifier {
     EndpointTemplate template, {
     String? onlyEndpointId,
   }) {
+    final beforeSnapshot = _projectStorage.serializeProject(_project);
     var updatedCount = 0;
     final templatePorts = template.effectivePorts;
     final validPortNums = {for (final p in templatePorts) p.portNumber};
@@ -1204,10 +1325,12 @@ class SandboxViewModel extends ChangeNotifier {
     }
 
     if (updatedCount > 0) {
+      _pushUndoSnapshot(beforeSnapshot);
+      _templateSyncRevision++;
       _revalidate();
       _lastStatusMessage =
           'Updated $updatedCount endpoint${updatedCount == 1 ? '' : 's'} on plan from "${template.name}".';
-      notifyListeners();
+      _notifyPanelChanged();
     }
     return updatedCount;
   }
@@ -1230,7 +1353,7 @@ class SandboxViewModel extends ChangeNotifier {
       _endpointTemplates = imported.endpointTemplates;
     }
     await _saveLibrarySafe();
-    notifyListeners();
+    _notifyPanelChanged();
   }
 
   Future<void> _saveLibrarySafe() async {
@@ -1248,72 +1371,62 @@ class SandboxViewModel extends ChangeNotifier {
 
   // --- Project Lifecycle & Demos ---
 
-  void newBlankProject() {
-    _project = TopologyProject(name: 'Untitled Topology');
-    clearSelection();
+  void _resetProjectState(TopologyProject nextProject) {
+    _project = nextProject;
+    _undoStack.clear();
+    _redoStack.clear();
+    _selectedSwitchId = null;
+    _selectedEndpointId = null;
+    _selectedLinkId = null;
+    _selectedPortNumber = null;
+    _pendingWireSource = null;
     _highlightedVlanId = null;
     _isTrunkFilterActive = false;
     _activeStreamTraceId = null;
+    _templateSyncRevision++;
     _revalidate();
-    notifyListeners();
+  }
+
+  void newBlankProject() {
+    _resetProjectState(TopologyProject(name: 'Untitled Topology'));
+    _notifyPanelChanged();
   }
 
   void loadDemoHealthyRing() {
-    _project = DeviceTemplates.healthyReferenceRingDemo();
-    clearSelection();
-    _highlightedVlanId = null;
-    _isTrunkFilterActive = false;
-    _activeStreamTraceId = null;
-    _revalidate();
-    notifyListeners();
+    _resetProjectState(DeviceTemplates.healthyReferenceRingDemo());
+    _notifyPanelChanged();
   }
 
   void loadDemoBrokenRing() {
-    _project = DeviceTemplates.brokenRingFaultDemo();
-    clearSelection();
-    _highlightedVlanId = null;
-    _isTrunkFilterActive = false;
-    _activeStreamTraceId = null;
-    _revalidate();
-    notifyListeners();
+    _resetProjectState(DeviceTemplates.brokenRingFaultDemo());
+    _notifyPanelChanged();
   }
 
   void loadDemoUnmanagedLoop() {
-    _project = DeviceTemplates.unmanagedLoopAndBroadcastDemo();
-    clearSelection();
-    _highlightedVlanId = null;
-    _isTrunkFilterActive = false;
-    _activeStreamTraceId = null;
-    _revalidate();
-    notifyListeners();
+    _resetProjectState(DeviceTemplates.unmanagedLoopAndBroadcastDemo());
+    _notifyPanelChanged();
+  }
+
+  void recordProjectSaved(String filePath) {
+    _lastStatusMessage = 'Saved topology project to $filePath';
+    _notifyPanelChanged();
   }
 
   Future<void> saveProjectToFile(String filePath) async {
     await _projectStorage.saveProjectToFile(_project, filePath);
     _lastStatusMessage = 'Saved topology project to $filePath';
-    notifyListeners();
+    _notifyPanelChanged();
   }
 
   Future<void> loadProjectFromFile(String filePath) async {
     final loaded = await _projectStorage.loadProjectFromFile(filePath);
-    _project = loaded;
-    clearSelection();
-    _highlightedVlanId = null;
-    _isTrunkFilterActive = false;
-    _activeStreamTraceId = null;
-    _revalidate();
+    _resetProjectState(loaded);
     _lastStatusMessage = 'Loaded project "${loaded.name}"';
-    notifyListeners();
+    _notifyPanelChanged();
   }
 
   /// Returns TX-advertised sACN / multicast stream specs on [vlanId] for quick-pick RX subscription chips.
-  List<({
-    String sourceLabel,
-    String? sacnUniverseSpec,
-    String? multicastGroupSpec,
-    String summaryLabel,
-    double bandwidthMbps,
-  })> advertisedTxStreamChipsForVlan(
+  List<AdvertisedTxStreamChip> advertisedTxStreamChipsForVlan(
     int vlanId,
     TrafficProtocol protocol, {
     String? excludeEndpointId,
@@ -1326,13 +1439,7 @@ class SandboxViewModel extends ChangeNotifier {
       links: _project.links,
     );
 
-    final chips = <({
-      String sourceLabel,
-      String? sacnUniverseSpec,
-      String? multicastGroupSpec,
-      String summaryLabel,
-      double bandwidthMbps,
-    })>[];
+    final chips = <AdvertisedTxStreamChip>[];
     final seen = <String>{};
 
     for (final ep in _project.endpoints) {
@@ -1393,58 +1500,16 @@ class SandboxViewModel extends ChangeNotifier {
         ? 'light'
         : 'dark';
     await themeService?.setThemeMode(nextMode);
-    notifyListeners();
+    _themeRevision++;
+    _notifyPanelChanged();
   }
 
   void notifyThemeChanged() {
-    notifyListeners();
+    _themeRevision++;
+    _notifyPanelChanged();
   }
 
   /// Generates vendor-neutral CLI reference summary for the selected switch.
-  String generateCliConfigPreview(SwitchNodeInstance sw) {
-    final buf = StringBuffer();
-    buf.writeln('! Vendor-Neutral Reference Config: ${sw.userLabel}');
-    buf.writeln('! Bridge MAC: ${sw.macAddress}  (BID: ${sw.bridgeIdHex})');
-    if (sw.managementIp != null && sw.managementIp!.isNotEmpty) {
-      buf.writeln('management ip ${sw.managementIp}');
-    }
-    buf.writeln(
-      'spanning-tree mode ${sw.stpMode.name}  ! priority ${sw.stpPriority}${sw.isRootBridge ? " (ROOT BRIDGE)" : ""}',
-    );
-    buf.writeln('!');
-
-    final sortedVlans = sw.vlanConfigs.keys.toList()..sort();
-    for (final vId in sortedVlans) {
-      final cfg = sw.vlanConfigs[vId]!;
-      buf.writeln('vlan $vId  ! ${cfg.vlanName}');
-      if (sw.supportsIgmpSnooping) {
-        buf.writeln(
-          '  ip igmp snooping ${cfg.igmpSnoopingEnabled ? "enable" : "disable"} (${cfg.igmpQuerierVersion.label})',
-        );
-      }
-      if (sw.supportsIgmpQuerier && cfg.igmpQuerierEnabled) {
-        buf.writeln(
-          '  ip igmp snooping querier enable${sw.activeQuerierVlans.contains(vId) ? "  ! ACTIVE QUERIER" : ""}',
-        );
-      }
-    }
-    buf.writeln('!');
-
-    for (final port in sw.ports) {
-      buf.writeln('interface ${port.displayName}  ! ${port.maxSpeed.label}');
-      if (port.portMode == SwitchPortMode.access) {
-        buf.writeln('  switchport mode access');
-        buf.writeln('  switchport access vlan ${port.nativeVlan}');
-      } else {
-        final allowed = (port.allowedVlans.toList()..sort()).join(',');
-        buf.writeln('  switchport mode trunk');
-        buf.writeln('  switchport trunk native vlan ${port.nativeVlan}');
-        buf.writeln('  switchport trunk allowed vlan $allowed');
-      }
-      if (port.poeCapable) {
-        buf.writeln('  power inline ${port.poeEnabled ? "auto" : "never"}');
-      }
-    }
-    return buf.toString();
-  }
+  String generateCliConfigPreview(SwitchNodeInstance sw) =>
+      CliConfigGenerator.generate(sw);
 }

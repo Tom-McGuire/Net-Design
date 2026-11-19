@@ -17,7 +17,8 @@ class TopControlBar extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final vm = context.watch<SandboxViewModel>();
+    context.select<SandboxViewModel, int>((v) => v.panelRevision);
+    final vm = context.read<SandboxViewModel>();
 
     return Column(
       mainAxisSize: MainAxisSize.min,
@@ -452,32 +453,52 @@ class TopControlBar extends StatelessWidget {
       case 'new_blank':
         vm.newBlankProject();
       case 'open':
-        final pickedFiles = await FilePicker.pickFiles(
-          type: FileType.custom,
-          allowedExtensions: ['netdesign', 'json'],
-        );
-        if (pickedFiles.isNotEmpty) {
-          final path = pickedFiles.single.path;
-          if (path != null) {
-            await vm.loadProjectFromFile(path);
+        try {
+          final pickedFiles = await FilePicker.pickFiles(
+            type: FileType.custom,
+            allowedExtensions: ['netdesign', 'json'],
+          );
+          if (pickedFiles.isNotEmpty) {
+            final path = pickedFiles.single.path;
+            if (path != null) {
+              await vm.loadProjectFromFile(path);
+            }
+          }
+        } catch (e) {
+          if (context.mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(content: Text('Failed to open project: $e')),
+            );
           }
         }
       case 'save':
-        final bytes = Uint8List.fromList(
-          utf8.encode(vm.serializeCurrentProject()),
-        );
-        final outputUri = await FilePicker.saveFile(
-          dialogTitle: 'Save Topology Project',
-          fileName:
-              '${vm.project.name.toLowerCase().replaceAll(RegExp(r'[^a-z0-9]+'), '_')}.netdesign',
-          bytes: bytes,
-        );
-        if (outputUri != null) {
-          if (outputUri.scheme == 'file') {
-            await vm.saveProjectToFile(outputUri.toFilePath());
-          } else if (context.mounted) {
+        try {
+          final bytes = Uint8List.fromList(
+            utf8.encode(vm.serializeCurrentProject()),
+          );
+          final outputUri = await FilePicker.saveFile(
+            dialogTitle: 'Save Topology Project',
+            fileName:
+                '${vm.project.name.toLowerCase().replaceAll(RegExp(r'[^a-z0-9]+'), '_')}.netdesign',
+            bytes: bytes,
+          );
+          if (outputUri != null) {
+            final savedTarget = outputUri.scheme == 'file'
+                ? outputUri.toFilePath()
+                : outputUri.toString();
+            vm.recordProjectSaved(savedTarget);
+            if (context.mounted) {
+              ScaffoldMessenger.of(context).showSnackBar(
+                SnackBar(
+                  content: Text('Saved topology project to $savedTarget.'),
+                ),
+              );
+            }
+          }
+        } catch (e) {
+          if (context.mounted) {
             ScaffoldMessenger.of(context).showSnackBar(
-              const SnackBar(content: Text('Saved topology project.')),
+              SnackBar(content: Text('Failed to save project: $e')),
             );
           }
         }

@@ -14,6 +14,7 @@ class IgmpDomainSolver {
     required Map<String, EndpointNodeInstance> endpointsById,
     required List<NetworkLinkEdge> links,
     required List<ValidationIssue> issues,
+    Map<String, EndpointPortAttachment>? precomputedAttachments,
   }) {
     final forwardingInterSwitchLinks = links.where((l) {
       return switchesById.containsKey(l.sourceNodeId) &&
@@ -24,11 +25,12 @@ class IgmpDomainSolver {
     }).toList();
 
     // Map (endpointId, epPortNumber) -> attached switch, port & link.
-    final epAttachments = MulticastFlowTracer.buildEndpointAttachments(
-      switchesById: switchesById,
-      endpointsById: endpointsById,
-      links: links,
-    );
+    final epAttachments = precomputedAttachments ??
+        MulticastFlowTracer.buildEndpointAttachments(
+          switchesById: switchesById,
+          endpointsById: endpointsById,
+          links: links,
+        );
 
     // Collect all VLAN IDs referenced anywhere in the topology.
     final allVlans = <int>{};
@@ -189,7 +191,8 @@ class IgmpDomainSolver {
 
             if (flow.deliveryType == DeliveryType.broadcast) {
               broadcastMbps += flow.estimatedBandwidthMbps;
-            } else if (flow.deliveryType == DeliveryType.multicast) {
+            } else if (flow.deliveryType == DeliveryType.multicast ||
+                flow.requiresIgmp) {
               multicastMbps += flow.estimatedBandwidthMbps;
             }
           }

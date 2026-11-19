@@ -17,11 +17,6 @@ class ResolvedMulticastStream {
   final int? sacnUniverse;
   final double bandwidthMbps;
 
-  String get traceKey => 'V$vlanId:$multicastIp';
-
-  String get shortLabel =>
-      sacnUniverse != null ? 'U$sacnUniverse' : multicastIp;
-
   String get displayLabel => sacnUniverse != null
       ? 'U$sacnUniverse ($multicastIp)'
       : '${protocol.label} ($multicastIp)';

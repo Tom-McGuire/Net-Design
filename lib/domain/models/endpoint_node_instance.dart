@@ -52,22 +52,19 @@ class EndpointNodeInstance {
           ),
         ];
 
-  EndpointPortConfig portByNumber(int portNumber) {
-    final list = effectivePorts;
-    for (final p in list) {
+  EndpointPortConfig? tryPortByNumber(int portNumber) {
+    for (final p in effectivePorts) {
       if (p.portNumber == portNumber) return p;
     }
-    return list.first;
+    return null;
   }
+
+  EndpointPortConfig portByNumber(int portNumber) =>
+      tryPortByNumber(portNumber) ?? effectivePorts.first;
 
   double get totalPoeDrawWatts => effectivePorts.fold<double>(
         0.0,
         (sum, p) => sum + p.effectivePoeDrawWatts,
-      );
-
-  double get totalTrafficMbps => activeTrafficFlows.fold<double>(
-        0.0,
-        (sum, flow) => sum + flow.estimatedBandwidthMbps,
       );
 
   EndpointNodeInstance copyWith({

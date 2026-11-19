@@ -81,9 +81,7 @@ class _NetDesignAppState extends State<NetDesignApp>
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     _themeSub?.cancel();
-    if (widget.themeService == null) {
-      _themeService.dispose();
-    }
+    _themeService.dispose();
     _viewModel.dispose();
     super.dispose();
   }

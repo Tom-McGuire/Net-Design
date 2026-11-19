@@ -1,3 +1,5 @@
+import 'dart:ui' as ui;
+
 import 'package:flutter/gestures.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -6,13 +8,22 @@ import 'package:net_design/data/services/device_templates.dart';
 import 'package:net_design/data/services/project_storage_service.dart';
 import 'package:net_design/data/services/suite_theme_service.dart';
 import 'package:net_design/domain/engine/topology_validator.dart';
+import 'package:net_design/domain/models/endpoint_node_instance.dart';
+import 'package:net_design/domain/models/endpoint_template.dart';
 import 'package:net_design/domain/models/enums.dart';
+import 'package:net_design/domain/models/network_link_edge.dart';
+import 'package:net_design/domain/models/switch_port_config.dart';
 import 'package:net_design/main.dart';
 import 'package:net_design/ui/features/canvas/endpoint_node_widget.dart';
+import 'package:net_design/ui/features/canvas/link_edge_painter.dart';
 import 'package:net_design/ui/features/canvas/switch_node_widget.dart';
+import 'package:net_design/ui/features/inspector/issues_drawer_panel.dart';
+import 'package:net_design/ui/features/inspector/link_inspector_view.dart';
+import 'package:net_design/ui/features/inspector/node_inspector_panel.dart';
 import 'package:net_design/ui/features/sandbox_view_model.dart';
 import 'package:net_design/ui/theme/app_theme.dart';
 import 'package:net_design/ui/widgets/top_control_bar.dart';
+import 'package:provider/provider.dart';
 
 void main() {
   testWidgets(
@@ -81,7 +92,20 @@ void main() {
       expect(find.text('Per-VLAN IGMP Snooping & Querier'), findsOneWidget);
       expect(find.text('Snooping'), findsWidgets);
       expect(find.text('Querier'), findsWidgets);
+      expect(find.text('Drop Unknown Multicast'), findsWidgets);
       expect(find.text('IGMP Version'), findsWidgets);
+
+      // Device Library renders BUILT-IN badge on seeded templates
+      await tester.tap(find.text('Device Library'));
+      await tester.pumpAndSettle();
+      expect(find.text('BUILT-IN'), findsWidgets);
+      await tester.tap(
+        find.descendant(
+          of: find.byType(Dialog),
+          matching: find.byIcon(Icons.close),
+        ),
+      );
+      await tester.pumpAndSettle();
 
       // Trunks filter chip is present alongside All & VLAN chips in TopControlBar
       final topBar = find.byType(TopControlBar);
@@ -444,6 +468,497 @@ void main() {
       // Now Core A -> Stage Right carries mrouter traffic to the Querier while STP-blocked link stays none.
       expect(coreRight.streamTraceState, LinkStreamTraceState.delivered);
       expect(leftRight.streamTraceState, LinkStreamTraceState.none);
+    },
+  );
+
+  testWidgets(
+    'Undo and Redo shortcuts (Ctrl+Z / Ctrl+Y / Ctrl+Shift+Z) restore and re-apply deletions',
+    (WidgetTester tester) async {
+      tester.view.physicalSize = const Size(1440, 900);
+      tester.view.devicePixelRatio = 1.0;
+      addTearDown(() {
+        AppTheme.isDark = true;
+        tester.view.resetPhysicalSize();
+        tester.view.resetDevicePixelRatio();
+      });
+
+      final themeService = SuiteThemeService(customDbPath: ':memory:');
+      addTearDown(themeService.dispose);
+
+      await tester.pumpWidget(
+        NetDesignApp(
+          themeService: themeService,
+          showStartupAdvisory: false,
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      final coreFinder = find.descendant(
+        of: find.byType(SwitchNodeWidget),
+        matching: find.text('FOH Core Switch A'),
+      );
+      expect(coreFinder, findsOneWidget);
+
+      await tester.tap(coreFinder);
+      await tester.pumpAndSettle();
+
+      await tester.sendKeyEvent(LogicalKeyboardKey.delete);
+      await tester.pumpAndSettle();
+      expect(coreFinder, findsNothing);
+
+      // Ctrl+Z undoes deletion
+      await tester.sendKeyDownEvent(LogicalKeyboardKey.controlLeft);
+      await tester.sendKeyEvent(LogicalKeyboardKey.keyZ);
+      await tester.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
+      await tester.pumpAndSettle();
+      expect(coreFinder, findsOneWidget);
+
+      // Ctrl+Y redoes deletion
+      await tester.sendKeyDownEvent(LogicalKeyboardKey.controlLeft);
+      await tester.sendKeyEvent(LogicalKeyboardKey.keyY);
+      await tester.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
+      await tester.pumpAndSettle();
+      expect(coreFinder, findsNothing);
+
+      // Ctrl+Shift+Z undoes? No, Ctrl+Shift+Z is redo — let's undo first, then redo with Ctrl+Shift+Z
+      await tester.sendKeyDownEvent(LogicalKeyboardKey.controlLeft);
+      await tester.sendKeyEvent(LogicalKeyboardKey.keyZ);
+      await tester.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
+      await tester.pumpAndSettle();
+      expect(coreFinder, findsOneWidget);
+
+      await tester.sendKeyDownEvent(LogicalKeyboardKey.controlLeft);
+      await tester.sendKeyDownEvent(LogicalKeyboardKey.shiftLeft);
+      await tester.sendKeyEvent(LogicalKeyboardKey.keyZ);
+      await tester.sendKeyUpEvent(LogicalKeyboardKey.shiftLeft);
+      await tester.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
+      await tester.pumpAndSettle();
+      expect(coreFinder, findsNothing);
+    },
+  );
+
+  test(
+    'Undo stack is bounded to 30 snapshots and addKnownVlan defaults igmpSnoopingEnabled to false',
+    () {
+      final vm = SandboxViewModel(
+        initialProject: DeviceTemplates.healthyReferenceRingDemo(),
+      );
+
+      vm.addKnownVlan(50, 'Stage Comms');
+      for (final sw in vm.project.switches) {
+        expect(sw.vlanConfigs[50]?.igmpSnoopingEnabled, isFalse);
+      }
+      expect(
+        vm.validation.issues.where(
+          (i) => i.title.contains('IGMP Snooping') && i.message.contains('50'),
+        ),
+        isEmpty,
+      );
+
+      for (var i = 0; i < 35; i++) {
+        vm.randomiseSwitchMacs();
+      }
+      var undoCount = 0;
+      while (vm.undo()) {
+        undoCount++;
+      }
+      expect(undoCount, 30);
+      expect(vm.canUndo, isFalse);
+      expect(vm.canRedo, isTrue);
+
+      // Endpoints placed from templates get a locally-administered MAC address
+      final placedEp = vm.addEndpointFromTemplate(vm.endpointTemplates.first);
+      expect(placedEp.macAddress, isNotNull);
+      expect(placedEp.macAddress, startsWith('02:'));
+    },
+  );
+
+  testWidgets(
+    'RX quick-pick chips toggle and merge universes and multicast groups including bidirectional flows',
+    (WidgetTester tester) async {
+      tester.view.physicalSize = const Size(1440, 900);
+      tester.view.devicePixelRatio = 1.0;
+      addTearDown(() {
+        AppTheme.isDark = true;
+        tester.view.resetPhysicalSize();
+        tester.view.resetDevicePixelRatio();
+      });
+
+      final vm = SandboxViewModel()..newBlankProject();
+      final tpl = vm.switchTemplates.first;
+      final sw = vm.addSwitchFromTemplate(tpl, dx: 200, dy: 100);
+      vm.updateSwitch(
+        sw.copyWith(
+          ports: [
+            for (var p = 1; p <= 8; p++)
+              SwitchPortConfig(
+                portNumber: p,
+                portMode: SwitchPortMode.trunk,
+                nativeVlan: 1,
+                allowedVlans: const {1, 20, 30},
+              ),
+          ],
+        ),
+      );
+
+      final tx1 = EndpointNodeInstance(
+        id: 'ep-tx1',
+        templateId: 'tpl-tx',
+        userLabel: 'Console TX1',
+        activeTrafficFlows: const [
+          TrafficRequirement(
+            id: 'f-tx1',
+            protocol: TrafficProtocol.sacn,
+            direction: TrafficDirection.txPublisher,
+            deliveryType: DeliveryType.multicast,
+            estimatedBandwidthMbps: 1.0,
+            requiresIgmp: true,
+            defaultVlanId: 20,
+            sacnUniverseSpec: '1-4',
+          ),
+        ],
+      );
+      final tx2 = EndpointNodeInstance(
+        id: 'ep-tx2',
+        templateId: 'tpl-tx',
+        userLabel: 'Console TX2',
+        activeTrafficFlows: const [
+          TrafficRequirement(
+            id: 'f-tx2',
+            protocol: TrafficProtocol.sacn,
+            direction: TrafficDirection.txPublisher,
+            deliveryType: DeliveryType.multicast,
+            estimatedBandwidthMbps: 1.0,
+            requiresIgmp: true,
+            defaultVlanId: 20,
+            sacnUniverseSpec: '5-8',
+          ),
+        ],
+      );
+      final dante1 = EndpointNodeInstance(
+        id: 'ep-d1',
+        templateId: 'tpl-d',
+        userLabel: 'Dante TX1',
+        activeTrafficFlows: const [
+          TrafficRequirement(
+            id: 'f-d1',
+            protocol: TrafficProtocol.danteAes67,
+            direction: TrafficDirection.txPublisher,
+            deliveryType: DeliveryType.multicast,
+            estimatedBandwidthMbps: 50.0,
+            requiresIgmp: true,
+            defaultVlanId: 30,
+            multicastGroupSpec: '239.69.0.1',
+          ),
+        ],
+      );
+      final dante2 = EndpointNodeInstance(
+        id: 'ep-d2',
+        templateId: 'tpl-d',
+        userLabel: 'Dante TX2',
+        activeTrafficFlows: const [
+          TrafficRequirement(
+            id: 'f-d2',
+            protocol: TrafficProtocol.danteAes67,
+            direction: TrafficDirection.txPublisher,
+            deliveryType: DeliveryType.multicast,
+            estimatedBandwidthMbps: 50.0,
+            requiresIgmp: true,
+            defaultVlanId: 30,
+            multicastGroupSpec: '239.69.0.2',
+          ),
+        ],
+      );
+      final sub = EndpointNodeInstance(
+        id: 'ep-sub',
+        templateId: 'tpl-sub',
+        userLabel: 'Bidirectional Receiver',
+        activeTrafficFlows: const [
+          TrafficRequirement(
+            id: 'f-sub-sacn',
+            protocol: TrafficProtocol.sacn,
+            direction: TrafficDirection.bidirectional,
+            deliveryType: DeliveryType.multicast,
+            estimatedBandwidthMbps: 0.0,
+            requiresIgmp: true,
+            defaultVlanId: 20,
+          ),
+          TrafficRequirement(
+            id: 'f-sub-dante',
+            protocol: TrafficProtocol.danteAes67,
+            direction: TrafficDirection.rxSubscriber,
+            deliveryType: DeliveryType.multicast,
+            estimatedBandwidthMbps: 100.0,
+            requiresIgmp: true,
+            defaultVlanId: 30,
+          ),
+        ],
+      );
+
+      vm.project.endpoints.addAll([tx1, tx2, dante1, dante2, sub]);
+      vm.connectPorts(sw.id, 1, tx1.id, 1);
+      vm.connectPorts(sw.id, 2, tx2.id, 1);
+      vm.connectPorts(sw.id, 3, dante1.id, 1);
+      vm.connectPorts(sw.id, 4, dante2.id, 1);
+      vm.connectPorts(sw.id, 5, sub.id, 1);
+      vm.selectEndpoint(sub.id);
+
+      await tester.pumpWidget(
+        ChangeNotifierProvider<SandboxViewModel>.value(
+          value: vm,
+          child: MaterialApp(
+            theme: AppTheme.darkTheme(),
+            home: const Scaffold(
+              body: Row(
+                children: [
+                  Expanded(child: SizedBox()),
+                  NodeInspectorPanel(),
+                ],
+              ),
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      // Bidirectional flow shows RX quick-pick chips for sACN
+      final sacnChip1 = find.text('sACN U1-4 (Console TX1)');
+      final sacnChip2 = find.text('sACN U5-8 (Console TX2)');
+      expect(sacnChip1, findsOneWidget);
+      expect(sacnChip2, findsOneWidget);
+
+      await tester.ensureVisible(sacnChip1);
+      await tester.tap(sacnChip1);
+      await tester.pumpAndSettle();
+      expect(vm.selectedEndpoint!.activeTrafficFlows[0].sacnUniverseSpec, '1-4');
+      expect(
+        vm.selectedEndpoint!.activeTrafficFlows[0].estimatedBandwidthMbps,
+        1.0,
+      );
+
+      await tester.ensureVisible(sacnChip2);
+      await tester.tap(sacnChip2);
+      await tester.pumpAndSettle();
+      expect(vm.selectedEndpoint!.activeTrafficFlows[0].sacnUniverseSpec, '1-8');
+      expect(
+        vm.selectedEndpoint!.activeTrafficFlows[0].estimatedBandwidthMbps,
+        2.0,
+      );
+
+      // Tapping first chip again toggles only 1-4 off, leaving 5-8
+      await tester.ensureVisible(sacnChip1);
+      await tester.tap(sacnChip1);
+      await tester.pumpAndSettle();
+      expect(vm.selectedEndpoint!.activeTrafficFlows[0].sacnUniverseSpec, '5-8');
+      expect(
+        vm.selectedEndpoint!.activeTrafficFlows[0].estimatedBandwidthMbps,
+        1.0,
+      );
+
+      // Dante multicast group quick-pick chips merge & toggle off cleanly
+      final danteChip1 = find.text('239.69.0.1 (Dante TX1)');
+      final danteChip2 = find.text('239.69.0.2 (Dante TX2)');
+      await tester.ensureVisible(danteChip1);
+      await tester.tap(danteChip1);
+      await tester.pumpAndSettle();
+      expect(
+        vm.selectedEndpoint!.activeTrafficFlows[1].multicastGroupSpec,
+        '239.69.0.1',
+      );
+      expect(
+        vm.selectedEndpoint!.activeTrafficFlows[1].estimatedBandwidthMbps,
+        50.0,
+      );
+
+      await tester.ensureVisible(danteChip2);
+      await tester.tap(danteChip2);
+      await tester.pumpAndSettle();
+      expect(
+        vm.selectedEndpoint!.activeTrafficFlows[1].multicastGroupSpec,
+        '239.69.0.1-2',
+      );
+      expect(
+        vm.selectedEndpoint!.activeTrafficFlows[1].estimatedBandwidthMbps,
+        100.0,
+      );
+
+      await tester.ensureVisible(danteChip1);
+      await tester.tap(danteChip1);
+      await tester.pumpAndSettle();
+      expect(
+        vm.selectedEndpoint!.activeTrafficFlows[1].multicastGroupSpec,
+        '239.69.0.2',
+      );
+      expect(
+        vm.selectedEndpoint!.activeTrafficFlows[1].estimatedBandwidthMbps,
+        50.0,
+      );
+    },
+  );
+
+  testWidgets(
+    'LinkInspectorView fixes trunk VLAN symmetry and IssuesDrawerPanel renders CLI CONFIG PREVIEW',
+    (WidgetTester tester) async {
+      tester.view.physicalSize = const Size(1440, 900);
+      tester.view.devicePixelRatio = 1.0;
+      addTearDown(() {
+        AppTheme.isDark = true;
+        tester.view.resetPhysicalSize();
+        tester.view.resetDevicePixelRatio();
+      });
+
+      final vm = SandboxViewModel(
+        initialProject: DeviceTemplates.brokenRingFaultDemo(),
+      );
+      vm.selectLink('lnk-brk-2');
+
+      await tester.pumpWidget(
+        ChangeNotifierProvider<SandboxViewModel>.value(
+          value: vm,
+          child: MaterialApp(
+            theme: AppTheme.darkTheme(),
+            home: const Scaffold(
+              body: Column(
+                children: [
+                  Expanded(
+                    child: Row(
+                      children: [
+                        Expanded(child: SizedBox()),
+                        NodeInspectorPanel(),
+                      ],
+                    ),
+                  ),
+                  IssuesDrawerPanel(),
+                ],
+              ),
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.byType(LinkInspectorView), findsOneWidget);
+      expect(find.text('Asymmetric / Pruned VLANs'), findsOneWidget);
+      final fixBtn = find.text('Fix Trunk VLAN Symmetry');
+      expect(fixBtn, findsOneWidget);
+
+      await tester.ensureVisible(fixBtn);
+      await tester.tap(fixBtn);
+      await tester.pumpAndSettle();
+
+      expect(find.text('Fix Trunk VLAN Symmetry'), findsNothing);
+      final fixedLink =
+          vm.project.links.firstWhere((l) => l.id == 'lnk-brk-2');
+      expect(fixedLink.activeVlans, containsAll([1, 20]));
+
+      // Switch to CLI CONFIG PREVIEW tab for FOH Rack Switch A
+      vm.selectSwitch('sw-foh-broken');
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.text('CLI CONFIG PREVIEW'));
+      await tester.pumpAndSettle();
+
+      expect(
+        find.textContaining('! Vendor-Neutral Reference Config: FOH Rack Switch A'),
+        findsOneWidget,
+      );
+      expect(find.textContaining('switchport trunk allowed vlan 1,20'), findsWidgets);
+    },
+  );
+
+  testWidgets(
+    'LinkEdgePainter highlights pruned VLAN trunks in red and detects LinkGeometry mutations',
+    (WidgetTester tester) async {
+      AppTheme.isDark = true;
+
+      final link = NetworkLinkEdge(
+        id: 'lnk-pruned',
+        sourceNodeId: 'sw-a',
+        sourcePortNumber: 1,
+        targetNodeId: 'sw-b',
+        targetPortNumber: 2,
+        stpState: LinkStpState.forwarding,
+        activeVlans: {1},
+        prunedVlans: {20},
+      );
+
+      final geom = LinkGeometry(
+        link: link,
+        start: const Offset(20, 60),
+        end: const Offset(280, 60),
+        control: const Offset(150, 60),
+      );
+      final geomDuplicate = LinkGeometry(
+        link: link,
+        start: const Offset(20, 60),
+        end: const Offset(280, 60),
+        control: const Offset(150, 60),
+      );
+
+      final painter = LinkEdgePainter(
+        geometries: [geom],
+        selectedLinkId: null,
+        highlightedVlanId: 20,
+        isTrunkFilterActive: false,
+        isDark: true,
+      );
+      final samePainter = LinkEdgePainter(
+        geometries: [geomDuplicate],
+        selectedLinkId: null,
+        highlightedVlanId: 20,
+        isTrunkFilterActive: false,
+        isDark: true,
+      );
+      expect(painter.shouldRepaint(samePainter), isFalse);
+
+      // Mutate prunedVlans in place and confirm snapshot detects change
+      link.prunedVlans = {};
+      link.activeVlans = {1, 20};
+      final mutatedGeom = LinkGeometry(
+        link: link,
+        start: const Offset(20, 60),
+        end: const Offset(280, 60),
+        control: const Offset(150, 60),
+      );
+      final mutatedPainter = LinkEdgePainter(
+        geometries: [mutatedGeom],
+        selectedLinkId: null,
+        highlightedVlanId: 20,
+        isTrunkFilterActive: false,
+        isDark: true,
+      );
+      expect(mutatedPainter.shouldRepaint(painter), isTrue);
+
+      // Paint original pruned trunk to an offscreen canvas and confirm AppTheme.error pixels render
+      final bytes = await tester.runAsync(() async {
+        final recorder = ui.PictureRecorder();
+        final canvas = Canvas(recorder);
+        painter.paint(canvas, const Size(300, 120));
+        final picture = recorder.endRecording();
+        final image = await picture.toImage(300, 120);
+        final byteData =
+            await image.toByteData(format: ui.ImageByteFormat.rawRgba);
+        image.dispose();
+        picture.dispose();
+        return byteData!.buffer.asUint8List();
+      });
+
+      final errArgb = AppTheme.error.toARGB32();
+      final errR = (errArgb >> 16) & 0xFF;
+      final errG = (errArgb >> 8) & 0xFF;
+      final errB = errArgb & 0xFF;
+
+      var foundErrorPixel = false;
+      for (var i = 0; i < bytes!.length; i += 4) {
+        if ((bytes[i] - errR).abs() <= 2 &&
+            (bytes[i + 1] - errG).abs() <= 2 &&
+            (bytes[i + 2] - errB).abs() <= 2 &&
+            bytes[i + 3] > 200) {
+          foundErrorPixel = true;
+          break;
+        }
+      }
+      expect(foundErrorPixel, isTrue);
     },
   );
 }

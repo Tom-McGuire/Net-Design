@@ -112,8 +112,10 @@ class _DesignCanvasState extends State<DesignCanvas> {
 
     return LayoutBuilder(
       builder: (context, constraints) {
-        _viewportSize = constraints.biggest;
-        _syncViewportCenter(vm);
+        if (constraints.biggest != _viewportSize) {
+          _viewportSize = constraints.biggest;
+          _syncViewportCenter(vm);
+        }
         final focusReq = vm.canvasCenterRequest;
         if (focusReq != null) {
           WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -123,12 +125,8 @@ class _DesignCanvasState extends State<DesignCanvas> {
           });
         }
 
-        final backdropColor = AppTheme.isDark
-            ? const Color(0xFF0B0C0E)
-            : const Color(0xFFDDE1E7);
-
         return Container(
-          color: backdropColor,
+          color: AppTheme.canvasBackdrop,
           child: Stack(
             children: [
               InteractiveViewer(

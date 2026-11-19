@@ -269,13 +269,15 @@ class EndpointTemplate {
     ];
   }
 
-  EndpointPortConfig portByNumber(int portNumber) {
-    final list = effectivePorts;
-    for (final p in list) {
+  EndpointPortConfig? tryPortByNumber(int portNumber) {
+    for (final p in effectivePorts) {
       if (p.portNumber == portNumber) return p;
     }
-    return list.first;
+    return null;
   }
+
+  EndpointPortConfig portByNumber(int portNumber) =>
+      tryPortByNumber(portNumber) ?? effectivePorts.first;
 
   double get totalPoeDrawWatts => effectivePorts.fold<double>(
         0.0,

@@ -53,38 +53,59 @@ class LibraryDrawer extends StatelessWidget {
                     Icon(Icons.menu_book_outlined,
                         size: 20, color: AppTheme.accent),
                     const SizedBox(width: 10),
-                    Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          'Local Vendor-Neutral Device Library',
-                          style: TextStyle(
-                            fontSize: 15,
-                            fontWeight: FontWeight.bold,
-                            color: AppTheme.textPrimary,
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            'Local Vendor-Neutral Device Library',
+                            overflow: TextOverflow.ellipsis,
+                            style: TextStyle(
+                              fontSize: 15,
+                              fontWeight: FontWeight.bold,
+                              color: AppTheme.textPrimary,
+                            ),
                           ),
-                        ),
-                        Text(
-                          'Define switches by physical port speed tiers, PoE budget, and endpoint traffic profiles',
-                          style: TextStyle(
-                            fontSize: 11,
-                            color: AppTheme.textSecondary,
+                          Text(
+                            'Define switches by physical port speed tiers, PoE budget, and endpoint traffic profiles',
+                            overflow: TextOverflow.ellipsis,
+                            style: TextStyle(
+                              fontSize: 11,
+                              color: AppTheme.textSecondary,
+                            ),
                           ),
-                        ),
-                      ],
+                        ],
+                      ),
                     ),
-                    const Spacer(),
+                    const SizedBox(width: 8),
                     TextButton.icon(
                       onPressed: () async {
-                        final pickedFiles = await FilePicker.pickFiles(
-                          type: FileType.custom,
-                          allowedExtensions: ['json'],
-                        );
-                        if (pickedFiles.isNotEmpty) {
-                          final path = pickedFiles.single.path;
-                          if (path != null) {
-                            final raw = await File(path).readAsString();
-                            await vm.importLibraryJson(raw);
+                        try {
+                          final pickedFiles = await FilePicker.pickFiles(
+                            type: FileType.custom,
+                            allowedExtensions: ['json'],
+                          );
+                          if (pickedFiles.isNotEmpty) {
+                            final path = pickedFiles.single.path;
+                            if (path != null) {
+                              final raw = await File(path).readAsString();
+                              await vm.importLibraryJson(raw);
+                              if (context.mounted) {
+                                ScaffoldMessenger.of(context).showSnackBar(
+                                  const SnackBar(
+                                    content: Text('Imported template library JSON.'),
+                                  ),
+                                );
+                              }
+                            }
+                          }
+                        } catch (e) {
+                          if (context.mounted) {
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              SnackBar(
+                                content: Text('Failed to import library: $e'),
+                              ),
+                            );
                           }
                         }
                       },
@@ -206,14 +227,7 @@ class LibraryDrawer extends StatelessWidget {
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          Text(
-                            tpl.name,
-                            style: TextStyle(
-                              fontSize: 13,
-                              fontWeight: FontWeight.bold,
-                              color: AppTheme.textPrimary,
-                            ),
-                          ),
+                          _buildTemplateNameRow(tpl.name, tpl.isBuiltIn),
                           Text(
                             '${tpl.summaryString} • ${tpl.poeBudgetWatts}W PoE • '
                             '${tpl.supportsStp ? "STP" : "No STP"} • '
@@ -367,14 +381,7 @@ class LibraryDrawer extends StatelessWidget {
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          Text(
-                            tpl.name,
-                            style: TextStyle(
-                              fontSize: 13,
-                              fontWeight: FontWeight.bold,
-                              color: AppTheme.textPrimary,
-                            ),
-                          ),
+                          _buildTemplateNameRow(tpl.name, tpl.isBuiltIn),
                           Text(
                             '${tpl.portsSummaryString} • ${tpl.totalPoeDrawWatts.toStringAsFixed(1)}W PoE'
                             '${flowsText.isNotEmpty ? " • $flowsText" : ""}',
@@ -462,6 +469,46 @@ class LibraryDrawer extends StatelessWidget {
             },
           ),
         ),
+      ],
+    );
+  }
+
+  Widget _buildTemplateNameRow(String name, bool isBuiltIn) {
+    return Row(
+      children: [
+        Flexible(
+          child: Text(
+            name,
+            overflow: TextOverflow.ellipsis,
+            style: TextStyle(
+              fontSize: 13,
+              fontWeight: FontWeight.bold,
+              color: AppTheme.textPrimary,
+            ),
+          ),
+        ),
+        if (isBuiltIn) ...[
+          const SizedBox(width: 6),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1.5),
+            decoration: BoxDecoration(
+              color: AppTheme.accent.withValues(alpha: 0.14),
+              borderRadius: BorderRadius.circular(4),
+              border: Border.all(
+                color: AppTheme.accent.withValues(alpha: 0.4),
+              ),
+            ),
+            child: Text(
+              'BUILT-IN',
+              style: TextStyle(
+                fontFamily: 'monospace',
+                fontSize: 9,
+                fontWeight: FontWeight.bold,
+                color: AppTheme.accent,
+              ),
+            ),
+          ),
+        ],
       ],
     );
   }

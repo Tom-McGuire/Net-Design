@@ -12,7 +12,6 @@ class SwitchPortConfig {
     this.portMode = SwitchPortMode.access,
     this.nativeVlan = 1,
     Set<int>? allowedVlans,
-    this.lagGroupId,
   })  : maxSpeed = mediaType.normalizeSpeed(maxSpeed),
         poeCapable = mediaType == PortMediaType.rj45 ? poeCapable : false,
         poeEnabled =
@@ -28,7 +27,6 @@ class SwitchPortConfig {
   final SwitchPortMode portMode;
   final int nativeVlan;
   final Set<int> allowedVlans;
-  final int? lagGroupId;
 
   String get mediaSpeedLabel {
     if (mediaType == PortMediaType.sfpFibre) {
@@ -77,8 +75,6 @@ class SwitchPortConfig {
     SwitchPortMode? portMode,
     int? nativeVlan,
     Set<int>? allowedVlans,
-    int? lagGroupId,
-    bool clearLagGroupId = false,
   }) {
     return SwitchPortConfig(
       portNumber: portNumber ?? this.portNumber,
@@ -90,7 +86,6 @@ class SwitchPortConfig {
       portMode: portMode ?? this.portMode,
       nativeVlan: nativeVlan ?? this.nativeVlan,
       allowedVlans: allowedVlans != null ? Set<int>.from(allowedVlans) : Set<int>.from(this.allowedVlans),
-      lagGroupId: clearLagGroupId ? null : (lagGroupId ?? this.lagGroupId),
     );
   }
 
@@ -105,7 +100,6 @@ class SwitchPortConfig {
       'portMode': portMode.toJson(),
       'nativeVlan': nativeVlan,
       'allowedVlans': (allowedVlans.toList()..sort()),
-      if (lagGroupId != null) 'lagGroupId': lagGroupId,
     };
   }
 
@@ -141,9 +135,6 @@ class SwitchPortConfig {
       portMode: SwitchPortMode.fromJson(json['portMode']),
       nativeVlan: nativeVlan,
       allowedVlans: parsedAllowed,
-      lagGroupId: (json['lagGroupId'] is num)
-          ? (json['lagGroupId'] as num).toInt()
-          : null,
     );
   }
 }

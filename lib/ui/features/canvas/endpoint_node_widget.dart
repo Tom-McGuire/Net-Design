@@ -55,7 +55,12 @@ class _EndpointNodeWidgetState extends State<EndpointNodeWidget> {
     final matchesHighlightedVlan = !isTrunkFilter &&
         (highlightedVlan == null ||
             endpointNode.activeTrafficFlows
-                .any((f) => f.defaultVlanId == highlightedVlan));
+                .any((f) => f.defaultVlanId == highlightedVlan) ||
+            vm.project.links.any(
+              (l) =>
+                  l.connectsNode(endpointNode.id) &&
+                  l.activeVlans.contains(highlightedVlan),
+            ));
 
     final isTraceSource =
         vm.activeStreamTraceTarget?.sourceEndpointId == endpointNode.id;

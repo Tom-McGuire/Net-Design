@@ -268,17 +268,6 @@ enum LinkStpState {
   const LinkStpState(this.label);
 
   final String label;
-
-  String toJson() => name;
-
-  static LinkStpState fromJson(Object? value) {
-    if (value is String) {
-      for (final item in values) {
-        if (item.name == value || item.label == value) return item;
-      }
-    }
-    return LinkStpState.notApplicable;
-  }
 }
 
 /// Validation finding severity levels.
@@ -291,17 +280,6 @@ enum IssueSeverity {
 
   final String label;
   final int sortOrder;
-
-  String toJson() => name;
-
-  static IssueSeverity fromJson(Object? value) {
-    if (value is String) {
-      for (final item in values) {
-        if (item.name == value || item.label == value) return item;
-      }
-    }
-    return IssueSeverity.info;
-  }
 }
 
 /// Validation finding domain categories.
@@ -315,15 +293,4 @@ enum IssueCategory {
   const IssueCategory(this.label);
 
   final String label;
-
-  String toJson() => name;
-
-  static IssueCategory fromJson(Object? value) {
-    if (value is String) {
-      for (final item in values) {
-        if (item.name == value || item.label == value) return item;
-      }
-    }
-    return IssueCategory.stp;
-  }
 }

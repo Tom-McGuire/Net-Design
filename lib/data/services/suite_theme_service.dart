@@ -17,6 +17,7 @@ class SuiteThemeService {
   Database? _db;
   Timer? _pollTimer;
   int? _lastDataVersion;
+  bool _isDisposed = false;
   final StreamController<String> _themeController =
       StreamController<String>.broadcast();
 
@@ -26,6 +27,7 @@ class SuiteThemeService {
   String get currentMode => _currentMode;
 
   Future<String> initAndReadTheme() async {
+    if (_isDisposed) return _currentMode;
     try {
       final path =
           customDbPath ?? SharedDeviceDatabase.getDefaultDatabasePath();
@@ -74,11 +76,15 @@ class SuiteThemeService {
   void _startPolling() {
     _pollTimer?.cancel();
     _lastDataVersion = _readDataVersion();
-    _pollTimer = Timer.periodic(pollInterval, (_) {
+    _pollTimer = Timer.periodic(pollInterval, (timer) {
+      if (_isDisposed) {
+        timer.cancel();
+        return;
+      }
       final v = _readDataVersion();
       if (v != null && _lastDataVersion != null && v != _lastDataVersion) {
         final nextMode = _readModeFromDb();
-        if (nextMode != _currentMode) {
+        if (nextMode != _currentMode && !_isDisposed && !_themeController.isClosed) {
           _currentMode = nextMode;
           _themeController.add(nextMode);
         }
@@ -99,9 +105,12 @@ class SuiteThemeService {
   }
 
   Future<void> setThemeMode(String mode) async {
+    if (_isDisposed) return;
     final normalized = mode == 'light' ? 'light' : 'dark';
     _currentMode = normalized;
-    _themeController.add(normalized);
+    if (!_themeController.isClosed) {
+      _themeController.add(normalized);
+    }
 
     try {
       if (_db == null) {
@@ -126,6 +135,8 @@ class SuiteThemeService {
   }
 
   void dispose() {
+    if (_isDisposed) return;
+    _isDisposed = true;
     _pollTimer?.cancel();
     _db?.close();
     _themeController.close();

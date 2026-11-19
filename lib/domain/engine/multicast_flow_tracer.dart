@@ -7,6 +7,7 @@ import '../models/switch_port_config.dart';
 import '../models/topology_project.dart';
 import '../models/validation_issue.dart';
 import 'multicast_stream_resolver.dart';
+import 'topology_graph_utils.dart';
 
 /// Selectable multicast trace target displayed in the Tier 3 "Trace Stream" bar.
 class StreamTraceTarget {
@@ -55,8 +56,9 @@ class MulticastFlowTracer {
       final swB = switchesById[link.targetNodeId];
 
       if (epA != null && swB != null) {
+        final epPort = epA.tryPortByNumber(link.sourcePortNumber);
         final swPort = swB.portByNumber(link.targetPortNumber);
-        if (swPort != null) {
+        if (epPort != null && swPort != null) {
           result['${epA.id}:${link.sourcePortNumber}'] = (
             sw: swB,
             port: swPort,
@@ -66,8 +68,9 @@ class MulticastFlowTracer {
           );
         }
       } else if (epB != null && swA != null) {
+        final epPort = epB.tryPortByNumber(link.targetPortNumber);
         final swPort = swA.portByNumber(link.sourcePortNumber);
-        if (swPort != null) {
+        if (epPort != null && swPort != null) {
           result['${epB.id}:${link.targetPortNumber}'] = (
             sw: swA,
             port: swPort,
@@ -103,12 +106,14 @@ class MulticastFlowTracer {
     required Map<String, EndpointNodeInstance> endpointsById,
     required List<NetworkLinkEdge> links,
     required List<ValidationIssue> issues,
+    Map<String, EndpointPortAttachment>? precomputedAttachments,
   }) {
-    final attachments = buildEndpointAttachments(
-      switchesById: switchesById,
-      endpointsById: endpointsById,
-      links: links,
-    );
+    final attachments = precomputedAttachments ??
+        buildEndpointAttachments(
+          switchesById: switchesById,
+          endpointsById: endpointsById,
+          links: links,
+        );
 
     final forwardingLinks = links.where((l) {
       return switchesById.containsKey(l.sourceNodeId) &&
@@ -196,9 +201,9 @@ class MulticastFlowTracer {
           if (a.att != null &&
               b.att != null &&
               a.att!.sw.id != b.att!.sw.id &&
-              !_isVlanReachable(
-                startSwId: a.att!.sw.id,
-                targetSwId: b.att!.sw.id,
+              !isVlanReachable(
+                startSwitchId: a.att!.sw.id,
+                targetSwitchId: b.att!.sw.id,
                 vlanId: a.stream.vlanId,
                 forwardingLinks: forwardingLinks,
               )) {
@@ -263,9 +268,9 @@ class MulticastFlowTracer {
               return false;
             }
             if (att.sw.id == tx.att!.sw.id) return true;
-            return _isVlanReachable(
-              startSwId: tx.att!.sw.id,
-              targetSwId: att.sw.id,
+            return isVlanReachable(
+              startSwitchId: tx.att!.sw.id,
+              targetSwitchId: att.sw.id,
               vlanId: vlanId,
               forwardingLinks: forwardingLinks,
             );
@@ -564,9 +569,9 @@ class MulticastFlowTracer {
       }
 
       // Compute BFS tree from txSw across active forwarding VLAN links
-      final bfs = _buildBfsTree(
+      final bfs = buildBfsTree(
         rootSwitchId: txSw.id,
-        vlanLinks: forwardingVlanLinks,
+        links: forwardingVlanLinks,
       );
 
       final compSwitchIds = bfs.visited;
@@ -595,17 +600,11 @@ class MulticastFlowTracer {
             cfg.igmpSnoopingEnabled;
       }
 
-      final txSwitchSnooping = isSnoopingActive(txSw);
-
-      if (!txSwitchSnooping || activeQuerierSwId == null) {
-        // Without IGMP Snooping on TX switch OR without any Active Querier on the VLAN,
-        // multicast floods across every reachable forwarding VLAN link and non-TX access port!
+      void floodComponent(String ip, double mbps) {
         for (final l in compLinks) {
           final parentOfSource = bfs.parentLink[l.sourceNodeId]?.id == l.id;
           final srcToDst = !parentOfSource;
-          for (final s in tx.streams) {
-            recordFlood(l, s.multicastIp, s.bandwidthMbps, srcToDst);
-          }
+          recordFlood(l, ip, mbps, srcToDst);
         }
         for (final att in attachments.values) {
           if (att.link.id == txLink.id) continue;
@@ -616,14 +615,18 @@ class MulticastFlowTracer {
           )) {
             continue;
           }
-          if (att.port.portMode == SwitchPortMode.access &&
-              att.port.nativeVlan != vlanId) {
-            continue;
-          }
           final swToEp = att.link.sourceNodeId == att.sw.id;
-          for (final s in tx.streams) {
-            recordFlood(att.link, s.multicastIp, s.bandwidthMbps, swToEp);
-          }
+          recordFlood(att.link, ip, mbps, swToEp);
+        }
+      }
+
+      final txSwitchSnooping = isSnoopingActive(txSw);
+
+      if (!txSwitchSnooping || activeQuerierSwId == null) {
+        // Without IGMP Snooping on TX switch OR without any Active Querier on the VLAN,
+        // multicast floods across every reachable forwarding VLAN link and non-TX access port!
+        for (final s in tx.streams) {
+          floodComponent(s.multicastIp, s.bandwidthMbps);
         }
         continue;
       }
@@ -639,54 +642,95 @@ class MulticastFlowTracer {
         )) {
           continue;
         }
-        if (att.port.portMode == SwitchPortMode.access &&
-            att.port.nativeVlan != vlanId) {
-          continue;
-        }
         candidatePrunedLinks.add(att.link);
       }
 
       for (final s in tx.streams) {
-        // Every snooping switch forwards multicast toward the Active Querier router port.
-        final targetSwitches = <String>{activeQuerierSwId};
         final subs = rxByIp[s.multicastIp] ?? const [];
-        for (final sub in subs) {
-          if (compSwitchIds.contains(sub.att.sw.id)) {
-            targetSwitches.add(sub.att.sw.id);
-            final swToEp = sub.att.link.sourceNodeId == sub.att.sw.id;
-            recordDelivery(sub.att.link, s.multicastIp, s.bandwidthMbps, swToEp);
-          }
+        final compSubs = [
+          for (final sub in subs)
+            if (compSwitchIds.contains(sub.att.sw.id)) sub,
+        ];
+
+        // When dropUnregisteredMulticast is disabled on TX switch and no subscribers
+        // exist for this group in the component, flood the component.
+        if (compSubs.isEmpty &&
+            txSw.vlanConfigs[vlanId]?.dropUnregisteredMulticast == false) {
+          floodComponent(s.multicastIp, s.bandwidthMbps);
+          continue;
         }
 
-        // Also if any switch in compIds has IGMP snooping DISABLED, multicast
-        // delivered into it floods to its local VLAN ports; trace path to it if flooded.
+        // Every snooping switch forwards multicast toward the Active Querier router port.
+        final targetSwitches = <String>{activeQuerierSwId};
+        for (final sub in compSubs) {
+          targetSwitches.add(sub.att.sw.id);
+          final swToEp = sub.att.link.sourceNodeId == sub.att.sw.id;
+          recordDelivery(sub.att.link, s.multicastIp, s.bandwidthMbps, swToEp);
+        }
+
+        final receivingSwitchIds = <String>{txSw.id};
         for (final targetSwId in targetSwitches) {
           String? cursor = targetSwId;
           while (cursor != null && cursor != txSw.id) {
             final edge = bfs.parentLink[cursor];
             final prev = bfs.parentNode[cursor];
             if (edge == null || prev == null) break;
+            receivingSwitchIds.add(cursor);
             final srcToDst = edge.sourceNodeId == prev;
             recordDelivery(edge, s.multicastIp, s.bandwidthMbps, srcToDst);
-
-            // Check if intermediate/target switch lacks IGMP snooping
-            final swNode = switchesById[cursor];
-            if (swNode != null && !isSnoopingActive(swNode)) {
-              for (final att in attachments.values) {
-                if (att.sw.id != swNode.id || att.link.id == txLink.id) continue;
-                final isSub = subs.any((sub) => sub.att.link.id == att.link.id);
-                if (isSub) continue;
-                if (!att.port.permitsVlan(
-                  vlanId,
-                  switchSupportsVlans: att.sw.supportsVlans,
-                )) {
-                  continue;
-                }
-                final swToEp = att.link.sourceNodeId == swNode.id;
-                recordFlood(att.link, s.multicastIp, s.bandwidthMbps, swToEp);
-              }
-            }
             cursor = prev;
+          }
+        }
+
+        // Any switch receiving the stream with IGMP snooping disabled floods it
+        // to its non-TX, non-subscribed VLAN ports and downstream trunks.
+        final floodVisited = <String>{};
+        final floodQueue = <String>[];
+        for (final seedId in receivingSwitchIds) {
+          final seedSw = switchesById[seedId];
+          if (seedSw != null &&
+              !isSnoopingActive(seedSw) &&
+              floodVisited.add(seedId)) {
+            floodQueue.add(seedId);
+          }
+        }
+
+        while (floodQueue.isNotEmpty) {
+          final currSwitchId = floodQueue.removeAt(0);
+          final currSw = switchesById[currSwitchId];
+          if (currSw == null) continue;
+
+          for (final att in attachments.values) {
+            if (att.sw.id != currSwitchId || att.link.id == txLink.id) continue;
+            final isSub = compSubs.any((sub) => sub.att.link.id == att.link.id);
+            if (isSub) continue;
+            if (!att.port.permitsVlan(
+              vlanId,
+              switchSupportsVlans: currSw.supportsVlans,
+            )) {
+              continue;
+            }
+            final swToEp = att.link.sourceNodeId == currSwitchId;
+            recordFlood(att.link, s.multicastIp, s.bandwidthMbps, swToEp);
+          }
+
+          final parentEdgeId = bfs.parentLink[currSwitchId]?.id;
+          for (final l in compLinks) {
+            if (!l.connectsNode(currSwitchId)) continue;
+            if (l.id == parentEdgeId) continue;
+            if (linkDeliveredIps[l.id]?.containsKey(s.multicastIp) == true) {
+              continue;
+            }
+            final srcToDst = l.sourceNodeId == currSwitchId;
+            recordFlood(l, s.multicastIp, s.bandwidthMbps, srcToDst);
+
+            final neighborId = l.otherNodeId(currSwitchId);
+            final neighborSw = switchesById[neighborId];
+            if (neighborSw != null &&
+                !isSnoopingActive(neighborSw) &&
+                floodVisited.add(neighborId)) {
+              floodQueue.add(neighborId);
+            }
           }
         }
       }
@@ -713,61 +757,5 @@ class MulticastFlowTracer {
         link.tracedStreamMbps = 0.0;
       }
     }
-  }
-
-  static bool _isVlanReachable({
-    required String startSwId,
-    required String targetSwId,
-    required int vlanId,
-    required List<NetworkLinkEdge> forwardingLinks,
-  }) {
-    if (startSwId == targetSwId) return true;
-    final visited = <String>{startSwId};
-    final queue = <String>[startSwId];
-    while (queue.isNotEmpty) {
-      final curr = queue.removeAt(0);
-      for (final l in forwardingLinks) {
-        if (!l.connectsNode(curr) || !l.activeVlans.contains(vlanId)) continue;
-        final next = l.otherNodeId(curr);
-        if (next == targetSwId) return true;
-        if (visited.add(next)) {
-          queue.add(next);
-        }
-      }
-    }
-    return false;
-  }
-
-  static ({
-    Set<String> visited,
-    Map<String, NetworkLinkEdge> parentLink,
-    Map<String, String> parentNode,
-  }) _buildBfsTree({
-    required String rootSwitchId,
-    required List<NetworkLinkEdge> vlanLinks,
-  }) {
-    final visited = <String>{rootSwitchId};
-    final parentLink = <String, NetworkLinkEdge>{};
-    final parentNode = <String, String>{};
-    final queue = <String>[rootSwitchId];
-
-    while (queue.isNotEmpty) {
-      final curr = queue.removeAt(0);
-      for (final l in vlanLinks) {
-        if (!l.connectsNode(curr)) continue;
-        final next = l.otherNodeId(curr);
-        if (visited.add(next)) {
-          parentLink[next] = l;
-          parentNode[next] = curr;
-          queue.add(next);
-        }
-      }
-    }
-
-    return (
-      visited: visited,
-      parentLink: parentLink,
-      parentNode: parentNode,
-    );
   }
 }

@@ -12,6 +12,8 @@ class AppTheme {
   static Color get surfaceHigh => isDark ? const Color(0xFF252526) : const Color(0xFFF9FAFB);
   static Color get surfaceElevated => isDark ? const Color(0xFF2D2D2D) : const Color(0xFFFFFFFF);
   static Color get border => isDark ? const Color(0xFF2C2C2C) : const Color(0xFFE5E7EB);
+  static Color get canvasBackdrop => isDark ? const Color(0xFF0B0C0E) : const Color(0xFFDDE1E7);
+  static Color get canvasGridMinor => isDark ? const Color(0xFF252A32) : const Color(0xFFDADEE5);
 
   // --- Dynamic Typography Tokens ---
   static Color get textPrimary => isDark ? const Color(0xFFE0E0E0) : const Color(0xFF111827);

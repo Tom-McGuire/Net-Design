@@ -5,6 +5,7 @@ import '../models/switch_node_instance.dart';
 import '../models/validation_issue.dart';
 import 'multicast_flow_tracer.dart';
 import 'multicast_stream_resolver.dart';
+import 'topology_graph_utils.dart';
 
 /// Pass 4: Link Bandwidth Utilization, Media Compatibility, Speed Step-Down & PoE Budget Solver.
 class ResourceBudgetSolver {
@@ -15,13 +16,15 @@ class ResourceBudgetSolver {
     required Map<String, EndpointNodeInstance> endpointsById,
     required List<NetworkLinkEdge> links,
     required List<ValidationIssue> issues,
+    Map<String, EndpointPortAttachment>? precomputedAttachments,
   }) {
     // Map (endpointId, epPortNumber) -> attached switch, port & link.
-    final epAttachments = MulticastFlowTracer.buildEndpointAttachments(
-      switchesById: switchesById,
-      endpointsById: endpointsById,
-      links: links,
-    );
+    final epAttachments = precomputedAttachments ??
+        MulticastFlowTracer.buildEndpointAttachments(
+          switchesById: switchesById,
+          endpointsById: endpointsById,
+          links: links,
+        );
 
     for (final link in links) {
       link.estimatedLoadMbps = 0.0;
@@ -33,16 +36,18 @@ class ResourceBudgetSolver {
       final nameA = swA?.userLabel ?? epA?.userLabel ?? link.sourceNodeId;
       final nameB = swB?.userLabel ?? epB?.userLabel ?? link.targetNodeId;
       final speedA = swA?.portByNumber(link.sourcePortNumber)?.maxSpeed ??
-          epA?.portByNumber(link.sourcePortNumber).effectiveSpeed ??
+          epA?.tryPortByNumber(link.sourcePortNumber)?.effectiveSpeed ??
+          epA?.nicSpeed ??
           link.negotiatedSpeed;
       final speedB = swB?.portByNumber(link.targetPortNumber)?.maxSpeed ??
-          epB?.portByNumber(link.targetPortNumber).effectiveSpeed ??
+          epB?.tryPortByNumber(link.targetPortNumber)?.effectiveSpeed ??
+          epB?.nicSpeed ??
           link.negotiatedSpeed;
       final mediaA = swA?.portByNumber(link.sourcePortNumber)?.mediaType ??
-          epA?.portByNumber(link.sourcePortNumber).mediaType ??
+          epA?.tryPortByNumber(link.sourcePortNumber)?.mediaType ??
           PortMediaType.rj45;
       final mediaB = swB?.portByNumber(link.targetPortNumber)?.mediaType ??
-          epB?.portByNumber(link.targetPortNumber).mediaType ??
+          epB?.tryPortByNumber(link.targetPortNumber)?.mediaType ??
           PortMediaType.rj45;
 
       // Flag physical media mismatches (RJ45 <-> SFP/Fibre) as Critical.
@@ -150,8 +155,14 @@ class ResourceBudgetSolver {
           }
         }
 
-        final snoopingOnTxSwitch = att.sw.supportsIgmpSnooping &&
-            (att.sw.vlanConfigs[vlanId]?.igmpSnoopingEnabled ?? false);
+        bool isSnoopingActiveOnVlan(String swId) {
+          final sw = switchesById[swId];
+          if (sw == null) return false;
+          return sw.supportsIgmpSnooping &&
+              (sw.vlanConfigs[vlanId]?.igmpSnoopingEnabled ?? false);
+        }
+
+        final snoopingOnTxSwitch = isSnoopingActiveOnVlan(att.sw.id);
 
         // Broadcast or un-snooped/querierless multicast floods the reachable VLAN subgraph.
         final isBroadcast = flow.deliveryType == DeliveryType.broadcast;
@@ -178,6 +189,7 @@ class ResourceBudgetSolver {
             if (activeQuerierSwId != null && activeQuerierSwId != att.sw.id) {
               targetSwitches.add(activeQuerierSwId);
             }
+            var hasCompSubscriber = false;
             for (final otherEp in endpointsById.values) {
               if (otherEp.id == ep.id) continue;
               for (final otherFlow in otherEp.activeTrafficFlows) {
@@ -187,7 +199,10 @@ class ResourceBudgetSolver {
                 }
                 final otherAtt =
                     epAttachments['${otherEp.id}:${otherFlow.effectivePortNumber}'];
-                if (otherAtt == null || otherAtt.sw.id == att.sw.id) continue;
+                if (otherAtt == null ||
+                    !compSwitchIds.contains(otherAtt.sw.id)) {
+                  continue;
+                }
                 final otherVlan =
                     MulticastFlowTracer.effectiveVlanForFlow(otherFlow, otherAtt);
                 if (otherVlan != vlanId) continue;
@@ -200,25 +215,48 @@ class ResourceBudgetSolver {
                     otherStreams
                         .any((os) => os.multicastIp == stream.multicastIp);
                 if (matchesStream) {
-                  targetSwitches.add(otherAtt.sw.id);
+                  hasCompSubscriber = true;
+                  if (otherAtt.sw.id != att.sw.id) {
+                    targetSwitches.add(otherAtt.sw.id);
+                  }
                 }
               }
             }
 
-            if (targetSwitches.isNotEmpty) {
-              final traversedLinks = _collectShortestPathUnion(
-                startSwitchId: att.sw.id,
-                targetSwitchIds: targetSwitches,
-                vlanLinks: vlanForwardLinks,
-              );
-              for (final l in traversedLinks) {
+            if (!hasCompSubscriber &&
+                att.sw.vlanConfigs[vlanId]?.dropUnregisteredMulticast == false) {
+              for (final l in reachableVlanLinks) {
                 l.estimatedLoadMbps += stream.bandwidthMbps;
               }
+              continue;
+            }
+
+            final traversedLinks = targetSwitches.isNotEmpty
+                ? _collectShortestPathUnion(
+                    startSwitchId: att.sw.id,
+                    targetSwitchIds: targetSwitches,
+                    vlanLinks: vlanForwardLinks,
+                  )
+                : <NetworkLinkEdge>{};
+            final floodedLinks = _collectSnoopingDisabledFloodLinks(
+              startSwitchId: att.sw.id,
+              deliveredLinks: traversedLinks,
+              reachableVlanLinks: reachableVlanLinks,
+              isSnoopingActive: isSnoopingActiveOnVlan,
+            );
+            for (final l in {...traversedLinks, ...floodedLinks}) {
+              l.estimatedLoadMbps += stream.bandwidthMbps;
             }
           }
         } else {
           // Directed unicast or aggregate multicast flow without stream specs
           final targetSwitches = <String>{};
+          if (flow.deliveryType == DeliveryType.multicast &&
+              activeQuerierSwId != null &&
+              activeQuerierSwId != att.sw.id) {
+            targetSwitches.add(activeQuerierSwId);
+          }
+          var hasCompSubscriber = false;
           for (final otherEp in endpointsById.values) {
             if (otherEp.id == ep.id) continue;
             for (final otherFlow in otherEp.activeTrafficFlows) {
@@ -228,23 +266,45 @@ class ResourceBudgetSolver {
               }
               final otherAtt =
                   epAttachments['${otherEp.id}:${otherFlow.effectivePortNumber}'];
-              if (otherAtt == null || otherAtt.sw.id == att.sw.id) continue;
+              if (otherAtt == null || !compSwitchIds.contains(otherAtt.sw.id)) {
+                continue;
+              }
               final otherVlan =
                   MulticastFlowTracer.effectiveVlanForFlow(otherFlow, otherAtt);
               if (otherVlan != vlanId) continue;
-              targetSwitches.add(otherAtt.sw.id);
+              hasCompSubscriber = true;
+              if (otherAtt.sw.id != att.sw.id) {
+                targetSwitches.add(otherAtt.sw.id);
+              }
             }
           }
 
-          if (targetSwitches.isNotEmpty) {
-            final traversedLinks = _collectShortestPathUnion(
-              startSwitchId: att.sw.id,
-              targetSwitchIds: targetSwitches,
-              vlanLinks: vlanForwardLinks,
-            );
-            for (final l in traversedLinks) {
+          if (flow.deliveryType == DeliveryType.multicast &&
+              !hasCompSubscriber &&
+              att.sw.vlanConfigs[vlanId]?.dropUnregisteredMulticast == false) {
+            for (final l in reachableVlanLinks) {
               l.estimatedLoadMbps += flow.estimatedBandwidthMbps;
             }
+            continue;
+          }
+
+          final traversedLinks = targetSwitches.isNotEmpty
+              ? _collectShortestPathUnion(
+                  startSwitchId: att.sw.id,
+                  targetSwitchIds: targetSwitches,
+                  vlanLinks: vlanForwardLinks,
+                )
+              : <NetworkLinkEdge>{};
+          final floodedLinks = flow.deliveryType == DeliveryType.multicast
+              ? _collectSnoopingDisabledFloodLinks(
+                  startSwitchId: att.sw.id,
+                  deliveredLinks: traversedLinks,
+                  reachableVlanLinks: reachableVlanLinks,
+                  isSnoopingActive: isSnoopingActiveOnVlan,
+                )
+              : const <NetworkLinkEdge>{};
+          for (final l in {...traversedLinks, ...floodedLinks}) {
+            l.estimatedLoadMbps += flow.estimatedBandwidthMbps;
           }
         }
       }
@@ -373,38 +433,60 @@ class ResourceBudgetSolver {
     return resultLinks;
   }
 
+  Set<NetworkLinkEdge> _collectSnoopingDisabledFloodLinks({
+    required String startSwitchId,
+    required Set<NetworkLinkEdge> deliveredLinks,
+    required Set<NetworkLinkEdge> reachableVlanLinks,
+    required bool Function(String switchId) isSnoopingActive,
+  }) {
+    final receivingSwitchIds = <String>{
+      startSwitchId,
+      for (final l in deliveredLinks) ...[l.sourceNodeId, l.targetNodeId],
+    };
+    final floodVisited = <String>{};
+    final floodQueue = <String>[];
+    for (final swId in receivingSwitchIds) {
+      if (!isSnoopingActive(swId) && floodVisited.add(swId)) {
+        floodQueue.add(swId);
+      }
+    }
+
+    final floodedLinks = <NetworkLinkEdge>{};
+    while (floodQueue.isNotEmpty) {
+      final curr = floodQueue.removeAt(0);
+      for (final l in reachableVlanLinks) {
+        if (!l.connectsNode(curr)) continue;
+        if (!deliveredLinks.contains(l)) {
+          floodedLinks.add(l);
+        }
+        final next = l.otherNodeId(curr);
+        if (!isSnoopingActive(next) && floodVisited.add(next)) {
+          floodQueue.add(next);
+        }
+      }
+    }
+    return floodedLinks;
+  }
+
   Set<NetworkLinkEdge> _collectShortestPathUnion({
     required String startSwitchId,
     required Set<String> targetSwitchIds,
     required List<NetworkLinkEdge> vlanLinks,
   }) {
-    final visited = <String>{startSwitchId};
-    final parentLink = <String, NetworkLinkEdge>{};
-    final parentNode = <String, String>{};
-    final queue = <String>[startSwitchId];
-
-    while (queue.isNotEmpty) {
-      final curr = queue.removeAt(0);
-      for (final l in vlanLinks) {
-        if (!l.connectsNode(curr)) continue;
-        final next = l.otherNodeId(curr);
-        if (visited.add(next)) {
-          parentLink[next] = l;
-          parentNode[next] = curr;
-          queue.add(next);
-        }
-      }
-    }
+    final bfs = buildBfsTree(
+      rootSwitchId: startSwitchId,
+      links: vlanLinks,
+    );
 
     final unionLinks = <NetworkLinkEdge>{};
     for (final target in targetSwitchIds) {
-      if (!visited.contains(target)) continue;
+      if (!bfs.visited.contains(target)) continue;
       String? cursor = target;
       while (cursor != null && cursor != startSwitchId) {
-        final l = parentLink[cursor];
+        final l = bfs.parentLink[cursor];
         if (l == null) break;
         unionLinks.add(l);
-        cursor = parentNode[cursor];
+        cursor = bfs.parentNode[cursor];
       }
     }
     return unionLinks;

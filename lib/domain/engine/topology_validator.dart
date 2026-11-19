@@ -104,12 +104,19 @@ class TopologyValidator {
       issues: issues,
     );
 
+    final epAttachments = MulticastFlowTracer.buildEndpointAttachments(
+      switchesById: switchesById,
+      endpointsById: endpointsById,
+      links: project.links,
+    );
+
     // Pass 2: Port VLAN Symmetry & End-to-End Reachability BFS
     vlanSolver.solve(
       switchesById: switchesById,
       endpointsById: endpointsById,
       links: project.links,
       issues: issues,
+      precomputedAttachments: epAttachments,
     );
 
     // Pass 3: Per-VLAN IGMP Snooping & Active Querier Solver
@@ -118,6 +125,7 @@ class TopologyValidator {
       endpointsById: endpointsById,
       links: project.links,
       issues: issues,
+      precomputedAttachments: epAttachments,
     );
 
     // Pass 3b: Multicast Stream Spec, Duplicate TX & Orphan RX Checks
@@ -126,6 +134,7 @@ class TopologyValidator {
       endpointsById: endpointsById,
       links: project.links,
       issues: issues,
+      precomputedAttachments: epAttachments,
     );
 
     // Pass 4: Link Bandwidth Utilization, Media Checks, Speed Step-Down & PoE Budget Aggregation
@@ -134,6 +143,7 @@ class TopologyValidator {
       endpointsById: endpointsById,
       links: project.links,
       issues: issues,
+      precomputedAttachments: epAttachments,
     );
 
     issues.sort((a, b) {
@@ -178,7 +188,7 @@ class TopologyValidator {
     }
     final ep = endpointsById[nodeId];
     if (ep != null) {
-      return ep.portByNumber(portNumber).effectiveSpeed;
+      return ep.tryPortByNumber(portNumber)?.effectiveSpeed ?? ep.nicSpeed;
     }
     return PortSpeed.speed1G;
   }
@@ -195,7 +205,7 @@ class TopologyValidator {
     }
     final ep = endpointsById[nodeId];
     if (ep != null) {
-      return ep.portByNumber(portNumber).mediaType;
+      return ep.tryPortByNumber(portNumber)?.mediaType ?? PortMediaType.rj45;
     }
     return PortMediaType.rj45;
   }

@@ -3,6 +3,7 @@ import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 
 import '../../../domain/models/enums.dart';
+import '../../../domain/models/switch_node_instance.dart';
 import '../../../domain/models/validation_issue.dart';
 import '../../theme/app_theme.dart';
 import '../sandbox_view_model.dart';
@@ -13,7 +14,8 @@ class IssuesDrawerPanel extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final vm = context.watch<SandboxViewModel>();
+    context.select<SandboxViewModel, int>((v) => v.panelRevision);
+    final vm = context.read<SandboxViewModel>();
     final expanded = vm.isIssuesExpanded;
     final issues = vm.filteredIssues;
     final selectedSwitch = vm.selectedSwitch;
@@ -306,7 +308,7 @@ class IssuesDrawerPanel extends StatelessWidget {
   Widget _buildCliPreview(
     BuildContext context,
     SandboxViewModel vm,
-    dynamic selectedSwitch,
+    SwitchNodeInstance? selectedSwitch,
   ) {
     if (selectedSwitch == null) {
       return Center(

@@ -20,7 +20,6 @@ class StpElectionSolver {
 
     // 1.1 Detect cycles containing any unmanaged or STP-disabled switch.
     final unprotectedLoopLinkIds = <String>{};
-    final reportedLoopComponents = <String>{};
 
     for (final link in interSwitchLinks) {
       final swA = switchesById[link.sourceNodeId]!;
@@ -42,26 +41,23 @@ class StpElectionSolver {
         unprotectedLoopLinkIds.add(link.id);
         link.stpState = LinkStpState.loopUnprotected;
 
-        final pairKey = ([swA.id, swB.id]..sort()).join(':');
-        if (reportedLoopComponents.add(pairKey)) {
-          issues.add(
-            ValidationIssue(
-              id: 'stp-unprotected-loop-${link.id}',
-              severity: IssueSeverity.critical,
-              category: IssueCategory.stp,
-              title: 'Unprotected Layer 2 Loop',
-              message:
-                  'Unprotected Layer 2 Loop detected between ${swA.userLabel} and ${swB.userLabel} — broadcast/multicast storm hazard.',
-              recommendation:
-                  'Enable RSTP on both switches or remove the redundant cable on an unmanaged switch.',
-              nodeId: !swA.isStpActive ? swA.id : swB.id,
-              portNumber: !swA.isStpActive
-                  ? link.sourcePortNumber
-                  : link.targetPortNumber,
-              linkId: link.id,
-            ),
-          );
-        }
+        issues.add(
+          ValidationIssue(
+            id: 'stp-unprotected-loop-${link.id}',
+            severity: IssueSeverity.critical,
+            category: IssueCategory.stp,
+            title: 'Unprotected Layer 2 Loop',
+            message:
+                'Unprotected Layer 2 Loop detected between ${swA.userLabel} and ${swB.userLabel} (${swA.userLabel} P${link.sourcePortNumber} <-> ${swB.userLabel} P${link.targetPortNumber}) — broadcast/multicast storm hazard.',
+            recommendation:
+                'Enable RSTP on both switches or remove the redundant cable on an unmanaged switch.',
+            nodeId: !swA.isStpActive ? swA.id : swB.id,
+            portNumber: !swA.isStpActive
+                ? link.sourcePortNumber
+                : link.targetPortNumber,
+            linkId: link.id,
+          ),
+        );
       }
     }
 
@@ -139,6 +135,7 @@ class StpElectionSolver {
       final parentLink = <String, NetworkLinkEdge>{};
       final parentBridge = <String, SwitchNodeInstance>{};
       final parentUpstreamPort = <String, int>{};
+      final parentDownstreamPort = <String, int>{};
       final settled = <String>{};
 
       final compLinks = stpActiveLinks
@@ -174,6 +171,7 @@ class StpElectionSolver {
           final candidateCost = bestDist + link.negotiatedSpeed.stpCost;
           final existingCost = distCost[vId];
           final upstreamPort = link.portForNode(u.id);
+          final downstreamPort = link.portForNode(vId);
 
           var shouldUpdate = existingCost == null || candidateCost < existingCost;
           if (!shouldUpdate && candidateCost == existingCost) {
@@ -184,7 +182,10 @@ class StpElectionSolver {
                 shouldUpdate = true;
               } else if (bridgeCmp == 0) {
                 final prevPort = parentUpstreamPort[vId] ?? 0x7FFFFFFF;
-                if (upstreamPort < prevPort) {
+                final prevDownPort = parentDownstreamPort[vId] ?? 0x7FFFFFFF;
+                if (upstreamPort < prevPort ||
+                    (upstreamPort == prevPort &&
+                        downstreamPort < prevDownPort)) {
                   shouldUpdate = true;
                 }
               }
@@ -197,6 +198,7 @@ class StpElectionSolver {
             parentLink[vId] = link;
             parentBridge[vId] = u;
             parentUpstreamPort[vId] = upstreamPort;
+            parentDownstreamPort[vId] = downstreamPort;
           }
         }
       }
@@ -282,6 +284,34 @@ class StpElectionSolver {
       }
     }
 
+    // Propagate hopDepthFromRoot across non-loop unmanaged switch extensions
+    // starting from all STP-active switches.
+    final extVisited = <String>{
+      for (final sw in switchesById.values)
+        if (sw.isStpActive) sw.id,
+    };
+    final extQueue = extVisited.toList()
+      ..sort(
+        (a, b) => switchesById[a]!
+            .hopDepthFromRoot
+            .compareTo(switchesById[b]!.hopDepthFromRoot),
+      );
+    while (extQueue.isNotEmpty) {
+      final currId = extQueue.removeAt(0);
+      final currSw = switchesById[currId]!;
+      for (final link in interSwitchLinks) {
+        if (unprotectedLoopLinkIds.contains(link.id)) continue;
+        if (!link.connectsNode(currId)) continue;
+        final nextId = link.otherNodeId(currId);
+        final nextSw = switchesById[nextId]!;
+        if (nextSw.isStpActive) continue;
+        if (extVisited.add(nextId)) {
+          nextSw.hopDepthFromRoot = currSw.hopDepthFromRoot + 1;
+          extQueue.add(nextId);
+        }
+      }
+    }
+
     // Any remaining inter-switch links touching an unmanaged switch without a cycle
     // are valid tree extensions and forward traffic.
     for (final link in interSwitchLinks) {
@@ -290,8 +320,12 @@ class StpElectionSolver {
       final swB = switchesById[link.targetNodeId]!;
       if (!swA.isStpActive || !swB.isStpActive) {
         link.stpState = LinkStpState.forwarding;
-        link.directionFromRootSourceToTarget =
-            swA.hopDepthFromRoot <= swB.hopDepthFromRoot;
+        if (swA.isStpActive != swB.isStpActive) {
+          link.directionFromRootSourceToTarget = swA.isStpActive;
+        } else {
+          link.directionFromRootSourceToTarget =
+              swA.hopDepthFromRoot <= swB.hopDepthFromRoot;
+        }
       }
     }
   }
